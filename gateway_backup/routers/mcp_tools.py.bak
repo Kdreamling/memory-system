@@ -1,0 +1,71 @@
+from fastapi import APIRouter
+from pydantic import BaseModel
+from typing import Optional
+import sys
+sys.path.insert(0, '/home/dream/memory-system/gateway')
+from services.storage import get_recent_conversations
+
+router = APIRouter(prefix="/mcp", tags=["MCP Tools"])
+
+class SearchRequest(BaseModel):
+    query: Optional[str] = ""
+    limit: int = 5
+
+class InitRequest(BaseModel):
+    limit: int = 4
+
+@router.post("/search_memory")
+async def search_memory(req: SearchRequest):
+    """搜索历史记忆"""
+    conversations = await get_recent_conversations("dream", req.limit)
+    
+    # 简单关键词过滤
+    if req.query:
+        filtered = []
+        for c in conversations:
+            if req.query.lower() in c["user_msg"].lower() or req.query.lower() in c["assistant_msg"].lower():
+                filtered.append(c)
+        conversations = filtered if filtered else conversations
+    
+    return {
+        "success": True,
+        "data": conversations,
+        "count": len(conversations)
+    }
+
+@router.post("/init_context")
+async def init_context(req: InitRequest):
+    """冷启动 - 获取最近对话"""
+    conversations = await get_recent_conversations("dream", req.limit)
+    
+    # 按时间正序返回
+    conversations.reverse()
+    
+    return {
+        "success": True,
+        "data": conversations,
+        "count": len(conversations)
+    }
+
+@router.get("/tools")
+async def list_tools():
+    """列出可用的MCP工具"""
+    return {
+        "tools": [
+            {
+                "name": "search_memory",
+                "description": "搜索与Dream的历史对话记忆",
+                "parameters": {
+                    "query": "搜索关键词",
+                    "limit": "返回数量，默认5"
+                }
+            },
+            {
+                "name": "init_context", 
+                "description": "获取最近的对话上下文",
+                "parameters": {
+                    "limit": "返回数量，默认4"
+                }
+            }
+        ]
+    }
