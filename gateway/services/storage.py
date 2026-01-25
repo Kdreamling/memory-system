@@ -129,3 +129,43 @@ async def search_conversations(
     except Exception as e:
         print(f"[Storage] Search error: {e}")
         return []
+async def update_weight(conversation_id: str, increment: int = 1) -> bool:
+    """增加记忆权重（被AI引用时调用）"""
+    try:
+        # 先获取当前权重
+        result = supabase.table("conversations") \
+            .select("weight") \
+            .eq("id", conversation_id) \
+            .execute()
+        
+        if result.data:
+            current = result.data[0].get("weight", 0) or 0
+            new_weight = current + increment
+            
+            supabase.table("conversations") \
+                .update({"weight": new_weight}) \
+                .eq("id", conversation_id) \
+                .execute()
+            
+            print(f"[Storage] Weight updated: {conversation_id[:8]}... -> {new_weight}")
+            return True
+        return False
+        
+    except Exception as e:
+        print(f"[Storage] Update weight error: {e}")
+        return False
+
+
+async def get_by_id(conversation_id: str) -> Optional[Dict]:
+    """根据ID获取对话"""
+    try:
+        result = supabase.table("conversations") \
+            .select("*") \
+            .eq("id", conversation_id) \
+            .execute()
+        
+        return result.data[0] if result.data else None
+        
+    except Exception as e:
+        print(f"[Storage] Get by id error: {e}")
+        return None

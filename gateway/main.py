@@ -15,7 +15,8 @@ from datetime import datetime
 import sys
 sys.path.insert(0, '/home/dream/memory-system/gateway')
 from config import get_settings
-from services.storage import save_conversation
+from services.storage import save_conversation, update_weight
+import re
 from services.background import sync_service
 from routers.mcp_tools import router as mcp_router
 
@@ -113,6 +114,21 @@ def should_skip_storage(user_msg: str) -> bool:
         if kw.lower() in user_msg.lower():
             return True
     return False
+async def process_citations(assistant_msg: str) -> str:
+    """解析并处理[[used:xxx]]引用标记"""
+    pattern = r"\[\[used:([a-f0-9-]+)\]\]"
+    matches = re.findall(pattern, assistant_msg)
+    
+    for conv_id in matches:
+        try:
+            await update_weight(conv_id)
+            print(f"[Citation] Weight updated for {conv_id[:8]}...")
+        except Exception as e:
+            print(f"[Citation] Error updating weight: {e}")
+    
+    # 移除标记，返回干净的消息
+    clean_msg = re.sub(pattern, "", assistant_msg)
+    return clean_msg
 
 def get_backend_config(model: str) -> dict:
     """根据模型名获取后端配置"""
