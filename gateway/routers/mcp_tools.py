@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 import sys
 
 sys.path.insert(0, '/home/dream/memory-system/gateway')
-from services.storage import get_recent_conversations, search_conversations
+from services.storage import get_recent_conversations, search_conversations, get_recent_summaries
 from services.memu_client import retrieve, is_available
 
 router = APIRouter()
@@ -165,28 +165,43 @@ async def execute_search_memory(args: dict) -> dict:
 
 
 async def execute_init_context(args: dict) -> dict:
-    """执行冷启动上下文加载"""
+    """执行冷启动上下文加载 - 返回摘要+最近对话"""
     limit = args.get("limit", 4)
     
+    lines = []
+    
+    # 1. 获取最近的摘要（前文回顾）
+    summaries = await get_recent_summaries("dream", 3)
+    if summaries:
+        lines.append("【前文回顾】以下是之前对话的摘要（仅供参考）：")
+        lines.append("")
+        for i, s in enumerate(reversed(summaries), 1):
+            time_str = format_time(s.get("created_at", ""))
+            lines.append(f"{i}. [{time_str}] {s['summary']}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+    
+    # 2. 获取最近4轮原文
     recent = await get_recent_conversations("dream", limit)
     
-    if not recent:
+    if recent:
+        lines.append("【最近对话】以下是最近的对话原文：")
+        lines.append("")
+        for conv in reversed(recent):
+            time_str = format_time(conv.get("created_at", ""))
+            lines.append(f"[{time_str}]")
+            lines.append(f"Dream: {conv['user_msg']}")
+            lines.append(f"AI: {conv['assistant_msg'][:200]}...")
+            lines.append("")
+    
+    if not lines:
         return {
             "content": [{
                 "type": "text",
                 "text": "这是一个全新的对话，没有之前的对话记录。"
             }]
         }
-    
-    # 格式化最近对话
-    lines = ["以下是最近的对话上下文（仅供参考，注意时间）：", ""]
-    
-    for conv in reversed(recent):  # 按时间正序
-        time_str = format_time(conv.get("created_at", ""))
-        lines.append(f"[{time_str}]")
-        lines.append(f"Dream: {conv['user_msg']}")
-        lines.append(f"AI: {conv['assistant_msg'][:200]}...")
-        lines.append("")
     
     return {
         "content": [{

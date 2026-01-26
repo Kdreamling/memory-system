@@ -169,3 +169,147 @@ async def get_by_id(conversation_id: str) -> Optional[Dict]:
     except Exception as e:
         print(f"[Storage] Get by id error: {e}")
         return None
+
+
+
+# ============ Summary 相关函数 ============
+
+async def get_current_round(user_id: str = "dream") -> int:
+    """获取当前对话轮数"""
+    try:
+        result = supabase.table("conversations") \
+            .select("round_number") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        
+        if result.data and result.data[0].get("round_number"):
+            return result.data[0]["round_number"]
+        return 0
+    except Exception as e:
+        print(f"[Storage] Get round error: {e}")
+        return 0
+
+
+async def save_conversation_with_round(
+    user_msg: str, 
+    assistant_msg: str, 
+    user_id: str = "dream"
+) -> Optional[str]:
+    """保存对话并记录轮数"""
+    
+    # 过滤系统消息
+    for kw in SKIP_KEYWORDS:
+        if kw.lower() in user_msg.lower():
+            print(f"[Storage] Skipped system message: {user_msg[:50]}...")
+            return None
+    
+    if not user_msg.strip() or not assistant_msg.strip():
+        return None
+    
+    try:
+        # 获取当前轮数+1
+        current_round = await get_current_round(user_id)
+        new_round = current_round + 1
+        
+        result = supabase.table("conversations").insert({
+            "user_id": user_id,
+            "user_msg": user_msg,
+            "assistant_msg": assistant_msg,
+            "synced_to_memu": False,
+            "round_number": new_round
+        }).execute()
+        
+        if result.data:
+            conv_id = result.data[0]["id"]
+            print(f"[Storage] Saved conversation {conv_id[:8]}... (round {new_round})")
+            return conv_id
+        return None
+        
+    except Exception as e:
+        print(f"[Storage] Error: {e}")
+        return None
+
+
+async def get_conversations_for_summary(
+    user_id: str = "dream",
+    start_round: int = 1,
+    end_round: int = 5
+) -> List[Dict]:
+    """获取指定轮数范围的对话，用于生成摘要"""
+    try:
+        result = supabase.table("conversations") \
+            .select("user_msg, assistant_msg, round_number, created_at") \
+            .eq("user_id", user_id) \
+            .gte("round_number", start_round) \
+            .lte("round_number", end_round) \
+            .order("round_number", desc=False) \
+            .execute()
+        
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"[Storage] Get conversations for summary error: {e}")
+        return []
+
+
+async def save_summary(
+    summary: str,
+    start_round: int,
+    end_round: int,
+    user_id: str = "dream"
+) -> Optional[str]:
+    """保存摘要"""
+    try:
+        result = supabase.table("summaries").insert({
+            "user_id": user_id,
+            "summary": summary,
+            "start_round": start_round,
+            "end_round": end_round
+        }).execute()
+        
+        if result.data:
+            summary_id = result.data[0]["id"]
+            print(f"[Storage] Saved summary {summary_id[:8]}... (rounds {start_round}-{end_round})")
+            return summary_id
+        return None
+    except Exception as e:
+        print(f"[Storage] Save summary error: {e}")
+        return None
+
+
+async def get_recent_summaries(
+    user_id: str = "dream",
+    limit: int = 3
+) -> List[Dict]:
+    """获取最近的摘要"""
+    try:
+        result = supabase.table("summaries") \
+            .select("summary, start_round, end_round, created_at") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .limit(limit) \
+            .execute()
+        
+        return result.data if result.data else []
+    except Exception as e:
+        print(f"[Storage] Get summaries error: {e}")
+        return []
+
+
+async def get_last_summarized_round(user_id: str = "dream") -> int:
+    """获取最后一次摘要覆盖到的轮数"""
+    try:
+        result = supabase.table("summaries") \
+            .select("end_round") \
+            .eq("user_id", user_id) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        
+        if result.data:
+            return result.data[0]["end_round"]
+        return 0
+    except Exception as e:
+        print(f"[Storage] Get last summarized round error: {e}")
+        return 0
