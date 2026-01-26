@@ -17,6 +17,8 @@ sys.path.insert(0, '/home/dream/memory-system/gateway')
 from config import get_settings
 from services.storage import save_conversation_with_round, update_weight
 from services.summary_service import check_and_generate_summary
+from services.embedding_service import store_conversation_embedding
+from services.embedding_service import store_conversation_embedding
 import re
 from services.background import sync_service
 from routers.mcp_tools import router as mcp_router
@@ -249,9 +251,12 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -
     assistant_msg = "".join(assistant_chunks)
     if user_msg and assistant_msg and not should_skip_storage(user_msg):
         try:
-            await save_conversation_with_round(user_msg, assistant_msg)
+            conv_id = await save_conversation_with_round(user_msg, assistant_msg)
             # 触发摘要检查
             asyncio.create_task(check_and_generate_summary())
+            # 后台向量化
+            if conv_id:
+                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
         except Exception as e:
             print(f"Storage error: {e}")
 
@@ -269,9 +274,12 @@ async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str)
             pass
         if user_msg and assistant_msg and not should_skip_storage(user_msg):
             try:
-                await save_conversation_with_round(user_msg, assistant_msg)
+                conv_id = await save_conversation_with_round(user_msg, assistant_msg)
                 # 触发摘要检查
                 asyncio.create_task(check_and_generate_summary())
+                # 后台向量化
+                if conv_id:
+                    asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
             except Exception as e:
                 print(f"Storage error: {e}")
         return JSONResponse(content=result)
