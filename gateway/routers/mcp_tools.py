@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, '/home/dream/memory-system/gateway')
 from services.storage import get_recent_conversations, search_conversations, get_recent_summaries
 from services.memu_client import retrieve, is_available
+from services.embedding_service import search_similar
 
 router = APIRouter()
 
@@ -142,7 +143,7 @@ async def handle_tools_call(params: dict) -> dict:
 # ============ 工具执行逻辑 ============
 
 async def execute_search_memory(args: dict) -> dict:
-    """执行搜索记忆"""
+    """执行搜索记忆 - 优先ChromaDB语义搜索"""
     query = args.get("query", "")
     limit = args.get("limit", 5)
     
@@ -151,15 +152,24 @@ async def execute_search_memory(args: dict) -> dict:
         recent = await get_recent_conversations("dream", limit)
         return format_conversations_result(recent, "最近的对话")
     
-    # 优先使用MemU语义搜索
+    # 优先使用ChromaDB语义搜索
+    print(f"[MCP] Using ChromaDB semantic search for: {query}")
+    try:
+        results = await search_similar(query, "dream", limit)
+        if results:
+            return format_chroma_result(results, query)
+    except Exception as e:
+        print(f"[MCP] ChromaDB search error: {e}")
+    
+    # Fallback: 尝试MemU
     if await is_available():
-        print(f"[MCP] Using MemU semantic search for: {query}")
+        print(f"[MCP] Fallback to MemU for: {query}")
         memories = await retrieve("dream", query, limit)
         if memories:
             return format_memu_result(memories, query)
     
-    # Fallback到关键词搜索
-    print(f"[MCP] Falling back to keyword search for: {query}")
+    # 最终Fallback: 关键词搜索
+    print(f"[MCP] Fallback to keyword search for: {query}")
     results = await search_conversations(query, "dream", limit)
     return format_conversations_result(results, f"关于'{query}'的记忆")
 
@@ -239,6 +249,36 @@ def format_conversations_result(conversations: List[Dict], title: str) -> dict:
         }]
     }
 
+
+
+def format_chroma_result(results: list, query: str) -> dict:
+    """格式化ChromaDB语义搜索结果"""
+    if not results:
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"没有找到与'{query}'相关的记忆。"
+            }]
+        }
+    
+    lines = [f"找到 {len(results)} 条与'{query}'相关的记忆（语义搜索）：", ""]
+    
+    for i, mem in enumerate(results, 1):
+        time_str = format_time(mem.get("created_at", ""))
+        distance = mem.get("distance")
+        similarity = f"相似度: {1-distance:.2f}" if distance else ""
+        
+        lines.append(f"【记忆 {i}】({time_str}) {similarity}")
+        lines.append(f"Dream: {mem.get('user_msg', '')[:150]}")
+        lines.append(f"AI: {mem.get('assistant_msg', '')[:150]}")
+        lines.append("")
+    
+    return {
+        "content": [{
+            "type": "text",
+            "text": "\n".join(lines)
+        }]
+    }
 
 def format_memu_result(memories: List[Dict], query: str) -> dict:
     """格式化MemU语义搜索结果"""

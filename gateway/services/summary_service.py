@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, '/home/dream/memory-system/gateway')
 from config import get_settings
+from services.embedding_service import get_embedding, store_summary_embedding
 from services.storage import (
     get_current_round,
     get_last_summarized_round,

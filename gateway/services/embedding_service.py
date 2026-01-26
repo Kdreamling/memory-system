@@ -118,3 +118,106 @@ async def cleanup_old_embeddings(days: int = 7):
         # TODO: 实现批量删除逻辑
     except Exception as e:
         print(f"Cleanup error: {e}")
+
+async def cleanup_old_embeddings_real(days: int = 7) -> int:
+    """清理超过N天的对话向量"""
+    from datetime import datetime, timedelta
+    
+    cutoff = datetime.now() - timedelta(days=days)
+    cutoff_str = cutoff.isoformat()
+    
+    try:
+        # 获取所有记录
+        all_data = collection.get(include=["metadatas"])
+        
+        if not all_data or not all_data['ids']:
+            print("[Cleanup] No data in ChromaDB")
+            return 0
+        
+        # 找出过期的ID
+        expired_ids = []
+        for i, meta in enumerate(all_data['metadatas']):
+            created_at = meta.get("created_at", "")
+            if created_at and created_at < cutoff_str:
+                expired_ids.append(all_data['ids'][i])
+        
+        if expired_ids:
+            collection.delete(ids=expired_ids)
+            print(f"[Cleanup] Deleted {len(expired_ids)} expired embeddings")
+            return len(expired_ids)
+        else:
+            print("[Cleanup] No expired embeddings found")
+            return 0
+            
+    except Exception as e:
+        print(f"[Cleanup] Error: {e}")
+        return 0
+
+# 摘要专用collection（永久保留）
+summary_collection = chroma_client.get_or_create_collection(
+    name="summaries",
+    metadata={"hnsw:space": "cosine"}
+)
+
+async def store_summary_embedding(
+    summary_id: str,
+    summary_text: str,
+    start_round: int,
+    end_round: int,
+    user_id: str = "dream"
+) -> bool:
+    """将摘要向量化并存入ChromaDB（永久保留）"""
+    
+    embedding = await get_embedding(summary_text)
+    if not embedding:
+        print(f"[Summary Embedding] Failed for {summary_id}")
+        return False
+    
+    try:
+        summary_collection.add(
+            ids=[summary_id],
+            embeddings=[embedding],
+            documents=[summary_text],
+            metadatas=[{
+                "user_id": user_id,
+                "start_round": start_round,
+                "end_round": end_round,
+                "type": "summary",
+                "created_at": datetime.now().isoformat()
+            }]
+        )
+        print(f"[Summary Embedding] Stored: {summary_id}")
+        return True
+    except Exception as e:
+        print(f"[Summary Embedding] Error: {e}")
+        return False
+
+async def search_summaries(query: str, user_id: str = "dream", limit: int = 3) -> List[dict]:
+    """语义搜索摘要"""
+    query_embedding = await get_embedding(query)
+    if not query_embedding:
+        return []
+    
+    try:
+        results = summary_collection.query(
+            query_embeddings=[query_embedding],
+            n_results=limit,
+            where={"user_id": user_id}
+        )
+        
+        summaries = []
+        if results and results['documents']:
+            for i, doc in enumerate(results['documents'][0]):
+                meta = results['metadatas'][0][i] if results['metadatas'] else {}
+                summaries.append({
+                    "id": results['ids'][0][i],
+                    "summary": doc,
+                    "start_round": meta.get("start_round"),
+                    "end_round": meta.get("end_round"),
+                    "created_at": meta.get("created_at", ""),
+                    "distance": results['distances'][0][i] if results.get('distances') else None
+                })
+        return summaries
+    except Exception as e:
+        print(f"[Summary Search] Error: {e}")
+        return []
