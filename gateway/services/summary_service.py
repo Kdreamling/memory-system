@@ -104,13 +104,24 @@ async def check_and_generate_summary(user_id: str = "dream") -> bool:
             summary_text = await generate_summary_text(conversations)
             
             if summary_text:
-                await save_summary(
+                summary_id = await save_summary(
                     summary=summary_text,
                     start_round=start_round,
                     end_round=end_round,
                     user_id=user_id
                 )
                 print(f"[Summary] Saved summary for rounds {start_round}-{end_round}")
+                
+                # 摘要向量化（永久保留）
+                if summary_id:
+                    asyncio.create_task(store_summary_embedding(
+                        summary_id=summary_id,
+                        summary_text=summary_text,
+                        start_round=start_round,
+                        end_round=end_round,
+                        user_id=user_id
+                    ))
+                
                 return True
             
         return False

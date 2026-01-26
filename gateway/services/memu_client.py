@@ -86,13 +86,15 @@ async def retrieve(
                 json={
                     "user_id": user_id,
                     "query": query,
-                    "limit": limit
+                    "top_k": limit
                 }
             )
             
             if response.status_code == 200:
                 data = response.json()
-                memories = data.get("memories", [])
+                # MemU返回格式: {"status":"success","result":{"items":[...]}}
+                result = data.get("result", {})
+                memories = result.get("items", [])
                 print(f"[MemU] Retrieved {len(memories)} memories for query: {query[:30]}...")
                 return memories
             else:
