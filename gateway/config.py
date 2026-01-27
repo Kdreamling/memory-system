@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     
     # 代理配置
     proxy_url: str = ""
+    yuque_token: str = ""
     # 服务配置
     gateway_port: int = 8001
     memu_port: int = 8000
