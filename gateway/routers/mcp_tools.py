@@ -312,11 +312,14 @@ def format_memu_result(memories: List[Dict], query: str) -> dict:
 
 
 def format_time(time_str: str) -> str:
-    """格式化时间字符串"""
+    """格式化时间字符串 - 转换为北京时间"""
     if not time_str:
         return "未知时间"
     try:
+        from datetime import timedelta
         dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-        return dt.strftime("%m月%d日 %H:%M")
+        # 转换为北京时间 (UTC+8)
+        beijing_time = dt + timedelta(hours=8)
+        return beijing_time.strftime("%m月%d日 %H:%M")
     except:
         return time_str[:16]
