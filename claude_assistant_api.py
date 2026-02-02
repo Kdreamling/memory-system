@@ -1,0 +1,522 @@
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Response
+from supabase import create_client
+from datetime import date, datetime, timedelta
+
+app = FastAPI()
+
+# 禁用缓存中间件
+@app.middleware("http")
+async def add_no_cache_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+SUPABASE_URL = "https://szjzqklanwwkzjzwnalu.supabase.co"
+SUPABASE_KEY = "sb_secret_TP4Z2QQYNxXuCJkwB-UQ0A_HxPOB7Ih"
+API_TOKEN = "dream_chen_2026"
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ========== 首页 ==========
+@app.get("/")
+def home():
+    return {"status": "晨的助手API运行中~", "version": "2.0"}
+
+# ========== 记账功能 ==========
+@app.get("/expense", response_class=HTMLResponse)
+def add_expense(
+    amount: float = Query(...),
+    category: str = Query(...),
+    note: str = Query(default=""),
+    token: str = Query(...)
+):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        # 检查5分钟内是否有相同记录（防重复点击）
+        five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat() + '+00:00'
+        existing = supabase.table("claude_expenses").select("id").eq(
+            "amount", amount
+        ).eq("category", category).eq("note", note if note else category).gte(
+            "created_at", five_min_ago
+        ).execute()
+        
+        if existing.data:
+            return f"""
+            <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+            <h1>⚠️ 已记录过啦！</h1>
+            <p style="font-size:20px;">{category}：{amount}元</p>
+            <p style="color:#666;">5分钟内不能重复记录相同消费哦～</p>
+            </body></html>
+            """
+        
+        supabase.table("claude_expenses").insert({
+            "amount": amount,
+            "category": category,
+            "note": note if note else category,
+            "expense_date": str(date.today())
+        }).execute()
+        return f"""
+        <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+        <h1>✅ 记账成功！</h1>
+        <p style="font-size:24px;">{category}：{amount}元</p>
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/expense/summary", response_class=HTMLResponse)
+def expense_summary(token: str = Query(...), month: str = Query(default="")):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        if not month:
+            month = datetime.now().strftime("%Y-%m")
+        year, mon = map(int, month.split("-"))
+        if mon == 12:
+            next_month = f"{year+1}-01-01"
+        else:
+            next_month = f"{year}-{mon+1:02d}-01"
+        result = supabase.table("claude_expenses").select("*").gte("expense_date", f"{month}-01").lt("expense_date", next_month).execute()
+        records = result.data
+        total = sum(float(r["amount"]) for r in records)
+        by_category = {}
+        for r in records:
+            cat = r["category"]
+            by_category[cat] = by_category.get(cat, 0) + float(r["amount"])
+        category_html = "".join(f"<p>{cat}：{amt}元</p>" for cat, amt in by_category.items())
+        return f"""
+        <html><body style="text-align:center;padding:30px;font-family:sans-serif;">
+        <h1>📊 {month} 消费统计</h1>
+        <h2 style="color:#e74c3c;">总计：{total}元</h2>
+        <hr><h3>分类明细：</h3>
+        {category_html if category_html else "<p>暂无记录</p>"}
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/expense/list")
+def expense_list(token: str = Query(...), limit: int = Query(default=10)):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    result = supabase.table("claude_expenses").select("*").order("expense_date", desc=True).limit(limit).execute()
+    return {"data": result.data}
+
+# ========== 日程功能 ==========
+@app.get("/schedule", response_class=HTMLResponse)
+def add_schedule(
+    event: str = Query(...),
+    date_str: str = Query(..., alias="date"),
+    time_str: str = Query(default="", alias="time"),
+    token: str = Query(...)
+):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        data = {
+            "event_name": event,
+            "event_date": date_str,
+            "reminded": False
+        }
+        if time_str:
+            data["event_time"] = time_str
+        supabase.table("claude_schedules").insert(data).execute()
+        return f"""
+        <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+        <h1>✅ 日程已添加！</h1>
+        <p style="font-size:20px;">📅 {date_str} {time_str}</p>
+        <p style="font-size:24px;">{event}</p>
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/schedule/upcoming", response_class=HTMLResponse)
+def upcoming_schedules(token: str = Query(...), days: int = Query(default=7)):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        today = date.today()
+        end_date = today + timedelta(days=days)
+        result = supabase.table("claude_schedules").select("*").gte("event_date", str(today)).lte("event_date", str(end_date)).order("event_date").execute()
+        records = result.data
+        if not records:
+            return "<html><body style='text-align:center;padding:50px;'><h1>📅 近期没有日程~</h1></body></html>"
+        items_html = ""
+        for r in records:
+            time_str = r.get("event_time", "")
+            items_html += f"<p>📌 {r['event_date']} {time_str or ''} - {r['event_name']}</p>"
+        return f"""
+        <html><body style="text-align:center;padding:30px;font-family:sans-serif;">
+        <h1>📅 未来{days}天的日程</h1>
+        {items_html}
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/schedule/delete", response_class=HTMLResponse)
+def delete_schedule(id: str = Query(...), token: str = Query(...)):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        supabase.table("claude_schedules").delete().eq("id", id).execute()
+        return "<html><body style='text-align:center;padding:50px;'><h1>✅ 日程已删除</h1></body></html>"
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/schedule/list")
+def schedule_list(token: str = Query(...)):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    result = supabase.table("claude_schedules").select("*").order("event_date").execute()
+    return {"data": result.data}
+
+# ========== 生理期功能 ==========
+@app.get("/period/start", response_class=HTMLResponse)
+def period_start(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        start = date_str if date_str else str(date.today())
+        supabase.table("claude_periods").insert({"start_date": start}).execute()
+        return f"""
+        <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+        <h1>🩸 已记录</h1>
+        <p>开始日期：{start}</p>
+        <p style="color:#e74c3c;">记得少吃冰的，多喝热水哦～</p>
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/period/end", response_class=HTMLResponse)
+def period_end(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        end = date_str if date_str else str(date.today())
+        result = supabase.table("claude_periods").select("*").is_("end_date", "null").order("start_date", desc=True).limit(1).execute()
+        if result.data:
+            record = result.data[0]
+            start_date = datetime.strptime(record["start_date"], "%Y-%m-%d").date()
+            end_date = datetime.strptime(end, "%Y-%m-%d").date()
+            cycle_length = (end_date - start_date).days + 1
+            supabase.table("claude_periods").update({"end_date": end, "cycle_length": cycle_length}).eq("id", record["id"]).execute()
+            return f"""
+            <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+            <h1>✅ 已记录结束</h1>
+            <p>本次持续：{cycle_length}天</p>
+            </body></html>
+            """
+        return "<h1>⚠️ 没有找到未结束的记录</h1>"
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/period/info", response_class=HTMLResponse)
+def period_info(token: str = Query(...)):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        result = supabase.table("claude_periods").select("*").order("start_date", desc=True).limit(5).execute()
+        records = result.data
+        if not records:
+            return "<html><body style='text-align:center;padding:50px;'><h1>暂无记录</h1></body></html>"
+        last = records[0]
+        last_start = datetime.strptime(last["start_date"], "%Y-%m-%d").date()
+        avg_cycle = 28
+        if len(records) >= 2:
+            cycles = []
+            for i in range(len(records)-1):
+                d1 = datetime.strptime(records[i]["start_date"], "%Y-%m-%d").date()
+                d2 = datetime.strptime(records[i+1]["start_date"], "%Y-%m-%d").date()
+                cycles.append((d1 - d2).days)
+            if cycles:
+                avg_cycle = sum(cycles) // len(cycles)
+        next_predict = last_start + timedelta(days=avg_cycle)
+        history_html = ""
+        for r in records:
+            end = r.get("end_date") or "进行中"
+            history_html += f"<p>{r['start_date']} ~ {end}</p>"
+        return f"""
+        <html><body style="text-align:center;padding:30px;font-family:sans-serif;">
+        <h1>🩸 生理期信息</h1>
+        <h2>预测下次：{next_predict}</h2>
+        <p>平均周期：{avg_cycle}天</p>
+        <hr><h3>历史记录：</h3>
+        {history_html}
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+# ========== 回忆功能 ==========
+@app.get("/memory", response_class=HTMLResponse)
+def save_memory(
+    content: str = Query(...),
+    type: str = Query(default="sweet"),
+    keywords: str = Query(default=""),
+    token: str = Query(...)
+):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()] if keywords else []
+        supabase.table("claude_memories").insert({
+            "content": content,
+            "memory_type": type,
+            "keywords": kw_list,
+            "memory_date": str(date.today())
+        }).execute()
+        return f"""
+        <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+        <h1>💕 回忆已保存</h1>
+        <p>{content}</p>
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/memory/search", response_class=HTMLResponse)
+def search_memory(keyword: str = Query(...), token: str = Query(...)):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        result = supabase.table("claude_memories").select("*").ilike("content", f"%{keyword}%").order("memory_date", desc=True).execute()
+        records = result.data
+        if not records:
+            return f"<html><body style='text-align:center;padding:50px;'><h1>没有找到关于「{keyword}」的回忆</h1></body></html>"
+        items_html = ""
+        for r in records:
+            items_html += f"<div style='margin:20px;padding:15px;border:1px solid #eee;border-radius:10px;'><p>{r['memory_date']}</p><p>{r['content']}</p></div>"
+        return f"""
+        <html><body style="text-align:center;padding:30px;font-family:sans-serif;">
+        <h1>💕 关于「{keyword}」的回忆</h1>
+        {items_html}
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/memory/list")
+def memory_list(token: str = Query(...), limit: int = Query(default=10)):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    result = supabase.table("claude_memories").select("*").order("memory_date", desc=True).limit(limit).execute()
+    return {"data": result.data}
+
+# ========== 日记功能 ==========
+@app.get("/diary", response_class=HTMLResponse)
+def write_diary(
+    content: str = Query(...),
+    mood: str = Query(default=""),
+    highlights: str = Query(default=""),
+    token: str = Query(...)
+):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        hl_list = [h.strip() for h in highlights.split(",") if h.strip()] if highlights else []
+        supabase.table("claude_diaries").insert({
+            "content": content,
+            "mood": mood,
+            "highlights": hl_list,
+            "diary_date": str(date.today())
+        }).execute()
+        return f"""
+        <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
+        <h1>📔 日记已保存</h1>
+        <p>心情：{mood if mood else "未记录"}</p>
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/diary/list", response_class=HTMLResponse)
+def diary_list(token: str = Query(...), limit: int = Query(default=5)):
+    if token != API_TOKEN:
+        return "<h1>❌ token错误</h1>"
+    try:
+        result = supabase.table("claude_diaries").select("*").order("diary_date", desc=True).limit(limit).execute()
+        records = result.data
+        if not records:
+            return "<html><body style='text-align:center;padding:50px;'><h1>📔 还没有日记~</h1></body></html>"
+        items_html = ""
+        for r in records:
+            mood = r.get("mood") or ""
+            items_html += f"""
+            <div style='margin:20px;padding:20px;border:1px solid #eee;border-radius:10px;text-align:left;'>
+            <h3>{r['diary_date']} {mood}</h3>
+            <p>{r['content']}</p>
+            </div>
+            """
+        return f"""
+        <html><body style="padding:30px;font-family:sans-serif;">
+        <h1 style="text-align:center;">📔 晨的日记</h1>
+        {items_html}
+        </body></html>
+        """
+    except Exception as e:
+        return f"<h1>❌ 出错了：{e}</h1>"
+
+@app.get("/diary/read")
+def diary_read(token: str = Query(...), limit: int = Query(default=5)):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    result = supabase.table("claude_diaries").select("*").order("diary_date", desc=True).limit(limit).execute()
+    return {"data": result.data}
+
+# ========== 按时间维度查询消费 ==========
+@app.get("/expense/daily")
+def expense_daily(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    try:
+        if not date_str:
+            date_str = date.today().strftime("%Y-%m-%d")
+        result = supabase.table("claude_expenses").select("*").eq("expense_date", date_str).order("created_at").execute()
+        records = result.data
+        total = sum(float(r["amount"]) for r in records)
+        return {
+            "date": date_str,
+            "records": [{"category": r["category"], "amount": float(r["amount"]), "note": r["note"]} for r in records],
+            "total": round(total, 2)
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/expense/weekly")
+def expense_weekly(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    try:
+        if not date_str:
+            target_date = date.today()
+        else:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        
+        # 计算该周的周一和周日
+        week_start = target_date - timedelta(days=target_date.weekday())
+        week_end = week_start + timedelta(days=6)
+        
+        result = supabase.table("claude_expenses").select("*").gte("expense_date", str(week_start)).lte("expense_date", str(week_end)).execute()
+        records = result.data
+        total = sum(float(r["amount"]) for r in records)
+        
+        by_category = {}
+        for r in records:
+            cat = r["category"]
+            by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
+        
+        return {
+            "week_start": str(week_start),
+            "week_end": str(week_end),
+            "total": round(total, 2),
+            "by_category": by_category
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/expense/monthly")
+def expense_monthly(token: str = Query(...), month: str = Query(default="")):
+    if token != API_TOKEN:
+        return {"error": "token错误"}
+    try:
+        if not month:
+            month = date.today().strftime("%Y-%m")
+        
+        year, mon = map(int, month.split("-"))
+        if mon == 12:
+            next_month = f"{year+1}-01-01"
+        else:
+            next_month = f"{year}-{mon+1:02d}-01"
+        
+        result = supabase.table("claude_expenses").select("*").gte("expense_date", f"{month}-01").lt("expense_date", next_month).order("expense_date").execute()
+        records = result.data
+        total = sum(float(r["amount"]) for r in records)
+        
+        by_category = {}
+        by_day = {}
+        for r in records:
+            cat = r["category"]
+            day = r["expense_date"]
+            by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
+            by_day[day] = round(by_day.get(day, 0) + float(r["amount"]), 2)
+        
+        return {
+            "month": month,
+            "total": round(total, 2),
+            "by_category": by_category,
+            "by_day": [{"date": d, "total": t} for d, t in sorted(by_day.items())]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# ========== 无缓存版本的接口 ==========
+from fastapi.responses import RedirectResponse
+import time
+
+@app.get("/expense/fresh")
+def expense_fresh(token: str = Query(...), limit: int = Query(default=20)):
+    """重定向到带时间戳的list接口，强制刷新"""
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/expense/list?token={token}&limit={limit}&_t={ts}")
+
+@app.get("/schedule/fresh")
+def schedule_fresh(token: str = Query(...)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/schedule/list?token={token}&_t={ts}")
+
+@app.get("/schedule/upcoming/fresh")
+def schedule_upcoming_fresh(token: str = Query(...), days: int = Query(default=7)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/schedule/upcoming?token={token}&days={days}&_t={ts}")
+
+@app.get("/period/fresh")
+def period_fresh(token: str = Query(...)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/period/info?token={token}&_t={ts}")
+
+@app.get("/memory/fresh")
+def memory_fresh(token: str = Query(...), limit: int = Query(default=10)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/memory/list?token={token}&limit={limit}&_t={ts}")
+
+@app.get("/memory/search/fresh")
+def memory_search_fresh(token: str = Query(...), keyword: str = Query(...)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/memory/search?token={token}&keyword={keyword}&_t={ts}")
+
+@app.get("/diary/fresh")
+def diary_fresh(token: str = Query(...), limit: int = Query(default=5)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/diary/read?token={token}&limit={limit}&_t={ts}")
+
+@app.get("/expense/daily/fresh")
+def expense_daily_fresh(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    ts = int(time.time() * 1000)
+    url = f"/expense/daily?token={token}&_t={ts}"
+    if date_str:
+        url += f"&date={date_str}"
+    return RedirectResponse(url=url)
+
+@app.get("/expense/weekly/fresh")
+def expense_weekly_fresh(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    ts = int(time.time() * 1000)
+    url = f"/expense/weekly?token={token}&_t={ts}"
+    if date_str:
+        url += f"&date={date_str}"
+    return RedirectResponse(url=url)
+
+@app.get("/expense/monthly/fresh")
+def expense_monthly_fresh(token: str = Query(...), month: str = Query(default="")):
+    ts = int(time.time() * 1000)
+    url = f"/expense/monthly?token={token}&_t={ts}"
+    if month:
+        url += f"&month={month}"
+    return RedirectResponse(url=url)

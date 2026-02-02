@@ -75,7 +75,7 @@ async def main():
         content = result['content']
         if yuque_url:
             content += f"\n\n---\n[在语雀查看]({yuque_url})"
-        await send_wechat(title, content)
+        #         await send_wechat(title, content)
 
 
 if __name__ == "__main__":

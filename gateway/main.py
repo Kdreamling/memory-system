@@ -28,6 +28,34 @@ settings = get_settings()
 # ============ 多后端配置 ============
 
 BACKENDS = {
+# ===== Antigravity通道 (Pro额度) =====
+    # Claude 系列
+    "claude-opus-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "claude-opus-4-5-thinking"
+    },
+    "claude-sonnet-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "claude-sonnet-4-5"
+    },
+    "claude-sonnet-thinking-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "claude-sonnet-4-5-thinking"
+    },
+    # Gemini 系列
+    "gemini-3-pro-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "gemini-3-pro-high"
+    },
+    "gemini-3-pro-image-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "gemini-3-pro-image"
+    },
     # DeepSeek 模型
     "deepseek-chat": {
         "base_url": "https://api.deepseek.com/v1",
@@ -39,7 +67,28 @@ BACKENDS = {
         "api_key": settings.llm_api_key,
         "model_name": "deepseek-reasoner"
     },
-    
+    # Gemini 模型 (via GCLI2API)
+    "假流式/gemini-3-pro": {
+        "base_url": "http://localhost:7861/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "假流式/gemini-3-pro-preview-high"
+    },
+    "流式抗截断/gemini-3-pro": {
+        "base_url": "http://localhost:7861/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "gemini-3-pro-preview-high"
+    },
+    "假流式/gemini-2.5-pro": {
+        "base_url": "http://localhost:7861/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "假流式/gemini-2.5-pro-max"
+    },
+    "流式抗截断/gemini-2.5-pro": {
+        "base_url": "http://localhost:7861/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "流式抗截断/gemini-2.5-pro-max"
+    },
+
     # OpenAI 模型 (via OpenRouter)
     "gpt-4o": {
         "base_url": "https://openrouter.ai/api/v1",
