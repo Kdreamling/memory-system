@@ -2,22 +2,17 @@ from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi import Response
 from supabase import create_client
-from datetime import date, datetime, timedelta, timezone
-import time
+from datetime import date, datetime, timedelta
 
 app = FastAPI()
-
-# 北京时区
-BEIJING_TZ = timezone(timedelta(hours=8))
 
 # 禁用缓存中间件
 @app.middleware("http")
 async def add_no_cache_headers(request, call_next):
     response = await call_next(request)
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-    response.headers["Surrogate-Control"] = "no-store"
     return response
 
 SUPABASE_URL = "https://szjzqklanwwkzjzwnalu.supabase.co"
@@ -26,18 +21,10 @@ API_TOKEN = "dream_chen_2026"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def get_beijing_date():
-    """获取北京时间的日期"""
-    return datetime.now(BEIJING_TZ).date()
-
-def get_beijing_datetime():
-    """获取北京时间"""
-    return datetime.now(BEIJING_TZ)
-
 # ========== 首页 ==========
 @app.get("/")
 def home():
-    return {"status": "晨的助手API运行中~", "version": "3.0", "timezone": "Asia/Shanghai"}
+    return {"status": "晨的助手API运行中~", "version": "2.0"}
 
 # ========== 记账功能 ==========
 @app.get("/expense", response_class=HTMLResponse)
@@ -67,19 +54,16 @@ def add_expense(
             </body></html>
             """
         
-        # 使用北京时间
-        today_beijing = get_beijing_date()
         supabase.table("claude_expenses").insert({
             "amount": amount,
             "category": category,
             "note": note if note else category,
-            "expense_date": str(today_beijing)
+            "expense_date": str(date.today())
         }).execute()
         return f"""
         <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
         <h1>✅ 记账成功！</h1>
         <p style="font-size:24px;">{category}：{amount}元</p>
-        <p style="color:#666;">日期：{today_beijing}</p>
         </body></html>
         """
     except Exception as e:
@@ -91,7 +75,7 @@ def expense_summary(token: str = Query(...), month: str = Query(default="")):
         return "<h1>❌ token错误</h1>"
     try:
         if not month:
-            month = get_beijing_datetime().strftime("%Y-%m")
+            month = datetime.now().strftime("%Y-%m")
         year, mon = map(int, month.split("-"))
         if mon == 12:
             next_month = f"{year+1}-01-01"
@@ -157,7 +141,7 @@ def upcoming_schedules(token: str = Query(...), days: int = Query(default=7)):
     if token != API_TOKEN:
         return "<h1>❌ token错误</h1>"
     try:
-        today = get_beijing_date()
+        today = date.today()
         end_date = today + timedelta(days=days)
         result = supabase.table("claude_schedules").select("*").gte("event_date", str(today)).lte("event_date", str(end_date)).order("event_date").execute()
         records = result.data
@@ -199,7 +183,7 @@ def period_start(token: str = Query(...), date_str: str = Query(default="", alia
     if token != API_TOKEN:
         return "<h1>❌ token错误</h1>"
     try:
-        start = date_str if date_str else str(get_beijing_date())
+        start = date_str if date_str else str(date.today())
         supabase.table("claude_periods").insert({"start_date": start}).execute()
         return f"""
         <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
@@ -216,7 +200,7 @@ def period_end(token: str = Query(...), date_str: str = Query(default="", alias=
     if token != API_TOKEN:
         return "<h1>❌ token错误</h1>"
     try:
-        end = date_str if date_str else str(get_beijing_date())
+        end = date_str if date_str else str(date.today())
         result = supabase.table("claude_periods").select("*").is_("end_date", "null").order("start_date", desc=True).limit(1).execute()
         if result.data:
             record = result.data[0]
@@ -287,7 +271,7 @@ def save_memory(
             "content": content,
             "memory_type": type,
             "keywords": kw_list,
-            "memory_date": str(get_beijing_date())
+            "memory_date": str(date.today())
         }).execute()
         return f"""
         <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
@@ -342,7 +326,7 @@ def write_diary(
             "content": content,
             "mood": mood,
             "highlights": hl_list,
-            "diary_date": str(get_beijing_date())
+            "diary_date": str(date.today())
         }).execute()
         return f"""
         <html><body style="text-align:center;padding:50px;font-family:sans-serif;">
@@ -394,7 +378,7 @@ def expense_daily(token: str = Query(...), date_str: str = Query(default="", ali
         return {"error": "token错误"}
     try:
         if not date_str:
-            date_str = str(get_beijing_date())
+            date_str = date.today().strftime("%Y-%m-%d")
         result = supabase.table("claude_expenses").select("*").eq("expense_date", date_str).order("created_at").execute()
         records = result.data
         total = sum(float(r["amount"]) for r in records)
@@ -412,10 +396,11 @@ def expense_weekly(token: str = Query(...), date_str: str = Query(default="", al
         return {"error": "token错误"}
     try:
         if not date_str:
-            target_date = get_beijing_date()
+            target_date = date.today()
         else:
             target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         
+        # 计算该周的周一和周日
         week_start = target_date - timedelta(days=target_date.weekday())
         week_end = week_start + timedelta(days=6)
         
@@ -443,7 +428,7 @@ def expense_monthly(token: str = Query(...), month: str = Query(default="")):
         return {"error": "token错误"}
     try:
         if not month:
-            month = get_beijing_datetime().strftime("%Y-%m")
+            month = date.today().strftime("%Y-%m")
         
         year, mon = map(int, month.split("-"))
         if mon == 12:
@@ -472,6 +457,69 @@ def expense_monthly(token: str = Query(...), month: str = Query(default="")):
     except Exception as e:
         return {"error": str(e)}
 
+# ========== 无缓存版本的接口 ==========
+from fastapi.responses import RedirectResponse
+import time
+
+@app.get("/expense/fresh")
+def expense_fresh(token: str = Query(...), limit: int = Query(default=20)):
+    """重定向到带时间戳的list接口，强制刷新"""
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/expense/list?token={token}&limit={limit}&_t={ts}")
+
+@app.get("/schedule/fresh")
+def schedule_fresh(token: str = Query(...)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/schedule/list?token={token}&_t={ts}")
+
+@app.get("/schedule/upcoming/fresh")
+def schedule_upcoming_fresh(token: str = Query(...), days: int = Query(default=7)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/schedule/upcoming?token={token}&days={days}&_t={ts}")
+
+@app.get("/period/fresh")
+def period_fresh(token: str = Query(...)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/period/info?token={token}&_t={ts}")
+
+@app.get("/memory/fresh")
+def memory_fresh(token: str = Query(...), limit: int = Query(default=10)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/memory/list?token={token}&limit={limit}&_t={ts}")
+
+@app.get("/memory/search/fresh")
+def memory_search_fresh(token: str = Query(...), keyword: str = Query(...)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/memory/search?token={token}&keyword={keyword}&_t={ts}")
+
+@app.get("/diary/fresh")
+def diary_fresh(token: str = Query(...), limit: int = Query(default=5)):
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/diary/read?token={token}&limit={limit}&_t={ts}")
+
+@app.get("/expense/daily/fresh")
+def expense_daily_fresh(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    ts = int(time.time() * 1000)
+    url = f"/expense/daily?token={token}&_t={ts}"
+    if date_str:
+        url += f"&date={date_str}"
+    return RedirectResponse(url=url)
+
+@app.get("/expense/weekly/fresh")
+def expense_weekly_fresh(token: str = Query(...), date_str: str = Query(default="", alias="date")):
+    ts = int(time.time() * 1000)
+    url = f"/expense/weekly?token={token}&_t={ts}"
+    if date_str:
+        url += f"&date={date_str}"
+    return RedirectResponse(url=url)
+
+@app.get("/expense/monthly/fresh")
+def expense_monthly_fresh(token: str = Query(...), month: str = Query(default="")):
+    ts = int(time.time() * 1000)
+    url = f"/expense/monthly?token={token}&_t={ts}"
+    if month:
+        url += f"&month={month}"
+    return RedirectResponse(url=url)
 # ========== 对话记忆功能 ==========
 
 @app.get("/chat_memory", response_class=HTMLResponse)
@@ -565,6 +613,7 @@ def chat_memory_by_tag(
     if token != API_TOKEN:
         return {"error": "token错误"}
     try:
+        # PostgreSQL数组包含查询
         result = supabase.table("claude_chat_memories").select("*").contains("tags", [tag]).order("chat_date", desc=True).limit(limit).execute()
         return {"data": result.data, "tag": tag}
     except Exception as e:
@@ -581,6 +630,7 @@ def chat_memory_search(
     if token != API_TOKEN:
         return {"error": "token错误"}
     try:
+        # 搜索title或summary中包含关键词的记录
         result = supabase.table("claude_chat_memories").select("*").or_(
             f"chat_title.ilike.%{keyword}%,summary.ilike.%{keyword}%"
         ).order("chat_date", desc=True).limit(limit).execute()
@@ -618,197 +668,13 @@ def delete_chat_memory(id: str = Query(...), token: str = Query(...)):
         return f"<h1>❌ 出错了：{e}</h1>"
 
 
-# ========== 修复版 /fresh 接口（直接返回数据，不做重定向） ==========
-
-@app.get("/expense/fresh")
-def expense_fresh(token: str = Query(...), limit: int = Query(default=20)):
-    """直接返回消费列表"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    result = supabase.table("claude_expenses").select("*").order("expense_date", desc=True).limit(limit).execute()
-    return {"data": result.data, "_t": int(time.time() * 1000)}
-
-@app.get("/expense/daily/fresh")
-def expense_daily_fresh(token: str = Query(...), date_str: str = Query(default="", alias="date")):
-    """直接返回今日消费数据"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        if not date_str:
-            date_str = str(get_beijing_date())
-        result = supabase.table("claude_expenses").select("*").eq("expense_date", date_str).order("created_at").execute()
-        records = result.data
-        total = sum(float(r["amount"]) for r in records)
-        return {
-            "date": date_str,
-            "records": [{"category": r["category"], "amount": float(r["amount"]), "note": r["note"]} for r in records],
-            "total": round(total, 2),
-            "_t": int(time.time() * 1000)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/expense/weekly/fresh")
-def expense_weekly_fresh(token: str = Query(...), date_str: str = Query(default="", alias="date")):
-    """直接返回本周消费数据"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        if not date_str:
-            target_date = get_beijing_date()
-        else:
-            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        
-        week_start = target_date - timedelta(days=target_date.weekday())
-        week_end = week_start + timedelta(days=6)
-        
-        result = supabase.table("claude_expenses").select("*").gte("expense_date", str(week_start)).lte("expense_date", str(week_end)).execute()
-        records = result.data
-        total = sum(float(r["amount"]) for r in records)
-        
-        by_category = {}
-        for r in records:
-            cat = r["category"]
-            by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
-        
-        return {
-            "week_start": str(week_start),
-            "week_end": str(week_end),
-            "total": round(total, 2),
-            "by_category": by_category,
-            "_t": int(time.time() * 1000)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/expense/monthly/fresh")
-def expense_monthly_fresh(token: str = Query(...), month: str = Query(default="")):
-    """直接返回本月消费数据"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        if not month:
-            month = get_beijing_datetime().strftime("%Y-%m")
-        
-        year, mon = map(int, month.split("-"))
-        if mon == 12:
-            next_month = f"{year+1}-01-01"
-        else:
-            next_month = f"{year}-{mon+1:02d}-01"
-        
-        result = supabase.table("claude_expenses").select("*").gte("expense_date", f"{month}-01").lt("expense_date", next_month).order("expense_date").execute()
-        records = result.data
-        total = sum(float(r["amount"]) for r in records)
-        
-        by_category = {}
-        by_day = {}
-        for r in records:
-            cat = r["category"]
-            day = r["expense_date"]
-            by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
-            by_day[day] = round(by_day.get(day, 0) + float(r["amount"]), 2)
-        
-        return {
-            "month": month,
-            "total": round(total, 2),
-            "by_category": by_category,
-            "by_day": [{"date": d, "total": t} for d, t in sorted(by_day.items())],
-            "_t": int(time.time() * 1000)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/schedule/fresh")
-def schedule_fresh(token: str = Query(...)):
-    """直接返回日程列表"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    result = supabase.table("claude_schedules").select("*").order("event_date").execute()
-    return {"data": result.data, "_t": int(time.time() * 1000)}
-
-@app.get("/schedule/upcoming/fresh")
-def schedule_upcoming_fresh(token: str = Query(...), days: int = Query(default=7)):
-    """直接返回近期日程"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        today = get_beijing_date()
-        end_date = today + timedelta(days=days)
-        result = supabase.table("claude_schedules").select("*").gte("event_date", str(today)).lte("event_date", str(end_date)).order("event_date").execute()
-        return {"data": result.data, "today": str(today), "end_date": str(end_date), "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/period/fresh")
-def period_fresh(token: str = Query(...)):
-    """直接返回生理期信息"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_periods").select("*").order("start_date", desc=True).limit(5).execute()
-        records = result.data
-        if not records:
-            return {"data": [], "message": "暂无记录", "_t": int(time.time() * 1000)}
-        
-        last = records[0]
-        last_start = datetime.strptime(last["start_date"], "%Y-%m-%d").date()
-        avg_cycle = 28
-        if len(records) >= 2:
-            cycles = []
-            for i in range(len(records)-1):
-                d1 = datetime.strptime(records[i]["start_date"], "%Y-%m-%d").date()
-                d2 = datetime.strptime(records[i+1]["start_date"], "%Y-%m-%d").date()
-                cycles.append((d1 - d2).days)
-            if cycles:
-                avg_cycle = sum(cycles) // len(cycles)
-        next_predict = last_start + timedelta(days=avg_cycle)
-        
-        return {
-            "history": records,
-            "avg_cycle": avg_cycle,
-            "next_predict": str(next_predict),
-            "_t": int(time.time() * 1000)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/memory/fresh")
-def memory_fresh(token: str = Query(...), limit: int = Query(default=10)):
-    """直接返回回忆列表"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    result = supabase.table("claude_memories").select("*").order("memory_date", desc=True).limit(limit).execute()
-    return {"data": result.data, "_t": int(time.time() * 1000)}
-
-@app.get("/memory/search/fresh")
-def memory_search_fresh(token: str = Query(...), keyword: str = Query(...)):
-    """直接返回搜索结果"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_memories").select("*").ilike("content", f"%{keyword}%").order("memory_date", desc=True).execute()
-        return {"data": result.data, "keyword": keyword, "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/diary/fresh")
-def diary_fresh(token: str = Query(...), limit: int = Query(default=5)):
-    """直接返回日记列表"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    result = supabase.table("claude_diaries").select("*").order("diary_date", desc=True).limit(limit).execute()
-    return {"data": result.data, "_t": int(time.time() * 1000)}
+# ========== 对话记忆的无缓存版本 ==========
 
 @app.get("/chat_memory/fresh")
 def chat_memory_fresh(token: str = Query(...), limit: int = Query(default=20)):
-    """直接返回对话记忆列表"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_chat_memories").select("*").order("chat_date", desc=True).limit(limit).execute()
-        return {"data": result.data, "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/chat_memory/list?token={token}&limit={limit}&_t={ts}")
+
 
 @app.get("/chat_memory/by_category/fresh")
 def chat_memory_by_category_fresh(
@@ -816,14 +682,9 @@ def chat_memory_by_category_fresh(
     token: str = Query(...),
     limit: int = Query(default=20)
 ):
-    """直接返回按分类查询结果"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_chat_memories").select("*").eq("category", category).order("chat_date", desc=True).limit(limit).execute()
-        return {"data": result.data, "category": category, "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/chat_memory/by_category?token={token}&category={category}&limit={limit}&_t={ts}")
+
 
 @app.get("/chat_memory/by_tag/fresh")
 def chat_memory_by_tag_fresh(
@@ -831,14 +692,9 @@ def chat_memory_by_tag_fresh(
     token: str = Query(...),
     limit: int = Query(default=20)
 ):
-    """直接返回按标签查询结果"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_chat_memories").select("*").contains("tags", [tag]).order("chat_date", desc=True).limit(limit).execute()
-        return {"data": result.data, "tag": tag, "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/chat_memory/by_tag?token={token}&tag={tag}&limit={limit}&_t={ts}")
+
 
 @app.get("/chat_memory/search/fresh")
 def chat_memory_search_fresh(
@@ -846,16 +702,9 @@ def chat_memory_search_fresh(
     token: str = Query(...),
     limit: int = Query(default=20)
 ):
-    """直接返回搜索结果"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_chat_memories").select("*").or_(
-            f"chat_title.ilike.%{keyword}%,summary.ilike.%{keyword}%"
-        ).order("chat_date", desc=True).limit(limit).execute()
-        return {"data": result.data, "keyword": keyword, "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/chat_memory/search?token={token}&keyword={keyword}&limit={limit}&_t={ts}")
+
 
 @app.get("/chat_memory/by_date/fresh")
 def chat_memory_by_date_fresh(
@@ -864,11 +713,5 @@ def chat_memory_by_date_fresh(
     token: str = Query(...),
     limit: int = Query(default=50)
 ):
-    """直接返回按日期范围查询结果"""
-    if token != API_TOKEN:
-        return {"error": "token错误"}
-    try:
-        result = supabase.table("claude_chat_memories").select("*").gte("chat_date", start).lte("chat_date", end).order("chat_date", desc=True).limit(limit).execute()
-        return {"data": result.data, "start": start, "end": end, "_t": int(time.time() * 1000)}
-    except Exception as e:
-        return {"error": str(e)}
+    ts = int(time.time() * 1000)
+    return RedirectResponse(url=f"/chat_memory/by_date?token={token}&start={start}&end={end}&limit={limit}&_t={ts}")
