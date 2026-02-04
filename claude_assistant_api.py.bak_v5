@@ -1,14 +1,17 @@
 """
-晨的私人助手 API v6.0
-纯MCP版本 - 删除HTTP链接接口，新增统一删除工具
-功能：记账、日程、生理期、回忆、日记、对话记忆
+晨的私人助手 API v5.0
+包含：记账、日程、生理期、回忆、日记、对话记忆
+MCP功能：完整读写支持！
 """
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from datetime import date, datetime, timedelta, timezone
+from typing import Optional
+import time
+import json
 
 app = FastAPI(title="晨的私人助手")
 
@@ -29,17 +32,33 @@ SUPABASE_URL = "https://szjzqklanwwkzjzwnalu.supabase.co"
 SUPABASE_KEY = "sb_secret_TP4Z2QQYNxXuCJkwB-UQ0A_HxPOB7Ih"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Token
+VALID_TOKEN = "dream_chen_2026"
+
 def get_beijing_date():
     return datetime.now(BEIJING_TZ).date()
 
 def get_beijing_datetime():
     return datetime.now(BEIJING_TZ)
 
+def verify_token(token: str) -> bool:
+    return token == VALID_TOKEN
+
+def html_response(title: str, message: str) -> HTMLResponse:
+    html = f"""
+    <html><head><title>{title}</title>
+    <meta charset="utf-8">
+    <style>body{{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f5f5f5;}}
+    .box{{background:white;padding:40px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);text-align:center;}}</style>
+    </head><body><div class="box"><h2>{title}</h2><p>{message}</p></div></body></html>
+    """
+    return HTMLResponse(content=html)
+
 # 防缓存中间件
 @app.middleware("http")
 async def add_no_cache_headers(request: Request, call_next):
     response = await call_next(request)
-    if "/mcp" in request.url.path:
+    if "/fresh" in request.url.path or "/mcp" in request.url.path:
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -50,17 +69,226 @@ async def add_no_cache_headers(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "晨的私人助手运行中", "version": "6.0", "mode": "MCP-only"}
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "6.0", "mode": "MCP-only", "timestamp": get_beijing_datetime().isoformat()}
+    return {"status": "晨的私人助手运行中", "version": "5.0", "mcp": "read+write"}
 
 
-# ==================== MCP工具定义 ====================
+# ==================== HTTP接口（保留给链接使用） ====================
+
+@app.get("/expense")
+async def add_expense(
+    amount: float = Query(...),
+    category: str = Query(default="其他"),
+    note: str = Query(default=""),
+    token: str = Query(...)
+):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    today = get_beijing_date()
+    now_utc = datetime.now(timezone.utc)
+    five_min_ago = now_utc - timedelta(minutes=5)
+    existing = supabase.table("claude_expenses").select("*").eq("expense_date", str(today)).eq("amount", amount).eq("category", category).gte("created_at", five_min_ago.isoformat()).execute()
+    if existing.data:
+        return html_response("提示", f"5分钟内已有相同记录，跳过重复记账")
+    supabase.table("claude_expenses").insert({
+        "amount": amount, "category": category, "note": note, "expense_date": str(today)
+    }).execute()
+    return html_response("记账成功！", f"已记录：{category} {amount}元 {note}")
+
+@app.get("/expense/fresh")
+async def get_expenses_fresh(token: str = Query(...), limit: int = Query(default=20)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_expenses").select("*").order("created_at", desc=True).limit(limit).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/expense/daily/fresh")
+async def get_daily_expenses_fresh(token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    today = get_beijing_date()
+    result = supabase.table("claude_expenses").select("*").eq("expense_date", str(today)).order("created_at").execute()
+    records = result.data
+    total = sum(float(r["amount"]) for r in records)
+    return JSONResponse({"date": str(today), "records": records, "total": round(total, 2), "_t": int(time.time() * 1000)})
+
+@app.get("/expense/monthly/fresh")
+async def get_monthly_expenses_fresh(token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    now = get_beijing_datetime()
+    month = now.strftime("%Y-%m")
+    year, mon = map(int, month.split("-"))
+    next_month = f"{year+1}-01-01" if mon == 12 else f"{year}-{mon+1:02d}-01"
+    result = supabase.table("claude_expenses").select("*").gte("expense_date", f"{month}-01").lt("expense_date", next_month).execute()
+    records = result.data
+    total = sum(float(r["amount"]) for r in records)
+    by_category = {}
+    for r in records:
+        cat = r["category"]
+        by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
+    return JSONResponse({"month": month, "total": round(total, 2), "by_category": by_category, "records": records, "_t": int(time.time() * 1000)})
+
+@app.get("/schedule")
+async def add_schedule(event: str = Query(...), date: str = Query(...), time: str = Query(default=""), token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    supabase.table("claude_schedules").insert({"event_name": event, "event_date": date, "event_time": time if time else None}).execute()
+    return html_response("日程添加成功！", f"已添加：{date} {time} {event}")
+
+@app.get("/schedule/fresh")
+async def get_schedules_fresh(token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_schedules").select("*").order("event_date").execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/schedule/upcoming/fresh")
+async def get_upcoming_schedules_fresh(token: str = Query(...), days: int = Query(default=7)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    today = get_beijing_date()
+    end_date = today + timedelta(days=days)
+    result = supabase.table("claude_schedules").select("*").gte("event_date", str(today)).lte("event_date", str(end_date)).order("event_date").execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/schedule/delete")
+async def delete_schedule(id: str = Query(...), token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    supabase.table("claude_schedules").delete().eq("id", id).execute()
+    return html_response("删除成功！", "日程已删除")
+
+@app.get("/period/start")
+async def period_start(token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    today = get_beijing_date()
+    supabase.table("claude_periods").insert({"start_date": str(today)}).execute()
+    return html_response("记录成功！", f"生理期开始日期：{today}")
+
+@app.get("/period/end")
+async def period_end(token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    today = get_beijing_date()
+    result = supabase.table("claude_periods").select("*").is_("end_date", "null").order("start_date", desc=True).limit(1).execute()
+    if result.data:
+        supabase.table("claude_periods").update({"end_date": str(today)}).eq("id", result.data[0]["id"]).execute()
+        return html_response("记录成功！", f"生理期结束日期：{today}")
+    return html_response("提示", "没有找到进行中的生理期记录")
+
+@app.get("/period/fresh")
+async def get_period_fresh(token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_periods").select("*").order("start_date", desc=True).limit(6).execute()
+    records = result.data
+    next_predict = None
+    avg_cycle = 28
+    if records:
+        last = records[0]
+        last_start = datetime.strptime(last["start_date"], "%Y-%m-%d").date()
+        if len(records) >= 2:
+            cycles = []
+            for i in range(len(records)-1):
+                d1 = datetime.strptime(records[i]["start_date"], "%Y-%m-%d").date()
+                d2 = datetime.strptime(records[i+1]["start_date"], "%Y-%m-%d").date()
+                cycles.append((d1 - d2).days)
+            if cycles:
+                avg_cycle = sum(cycles) // len(cycles)
+        next_predict = str(last_start + timedelta(days=avg_cycle))
+    return JSONResponse({"records": records, "avg_cycle": avg_cycle, "next_predict": next_predict, "_t": int(time.time() * 1000)})
+
+@app.get("/memory")
+async def add_memory_http(content: str = Query(...), type: str = Query(default="sweet"), keywords: str = Query(default=""), token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    today = get_beijing_date()
+    supabase.table("claude_memories").insert({"content": content, "memory_type": type, "keywords": keywords, "memory_date": str(today)}).execute()
+    return html_response("回忆保存成功！", f"已保存这份美好的回忆～💕")
+
+@app.get("/memory/fresh")
+async def get_memories_fresh(token: str = Query(...), limit: int = Query(default=10)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_memories").select("*").order("memory_date", desc=True).limit(limit).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/memory/search/fresh")
+async def search_memories_fresh(keyword: str = Query(...), token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_memories").select("*").ilike("content", f"%{keyword}%").order("memory_date", desc=True).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/diary")
+async def add_diary_http(content: str = Query(...), mood: str = Query(default="平静"), highlights: str = Query(default=""), token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    today = get_beijing_date()
+    supabase.table("claude_diaries").insert({"content": content, "mood": mood, "highlights": [highlights] if highlights else [], "diary_date": str(today)}).execute()
+    return html_response("日记保存成功！", "晨的日记已记录～📔")
+
+@app.get("/diary/fresh")
+async def get_diaries_fresh(token: str = Query(...), limit: int = Query(default=5)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_diaries").select("*").order("diary_date", desc=True).limit(limit).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/chat_memory")
+async def add_chat_memory_http(date: str = Query(...), title: str = Query(...), summary: str = Query(...), category: str = Query(...), tags: str = Query(default=""), mood: str = Query(default=""), token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    now_utc = datetime.now(timezone.utc)
+    five_min_ago = now_utc - timedelta(minutes=5)
+    existing = supabase.table("claude_chat_memories").select("id").eq("chat_title", title).gte("created_at", five_min_ago.isoformat()).execute()
+    if existing.data:
+        return html_response("提示", "5分钟内已有相同标题的记忆")
+    tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    supabase.table("claude_chat_memories").insert({"chat_date": date, "chat_title": title, "summary": summary, "category": category, "tags": tags_list, "mood": mood if mood else None}).execute()
+    return html_response("记忆存储成功！", f"已保存：{title}")
+
+@app.get("/chat_memory/fresh")
+async def get_chat_memories_fresh(token: str = Query(...), limit: int = Query(default=20)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_chat_memories").select("*").order("chat_date", desc=True).limit(limit).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/chat_memory/search/fresh")
+async def search_chat_memories_fresh(keyword: str = Query(...), token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_chat_memories").select("*").or_(f"chat_title.ilike.%{keyword}%,summary.ilike.%{keyword}%").order("chat_date", desc=True).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/chat_memory/by_category/fresh")
+async def get_chat_by_category_fresh(category: str = Query(...), token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_chat_memories").select("*").eq("category", category).order("chat_date", desc=True).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/chat_memory/by_tag/fresh")
+async def get_chat_by_tag_fresh(tag: str = Query(...), token: str = Query(...)):
+    if not verify_token(token):
+        return JSONResponse({"error": "Token验证失败"}, status_code=401)
+    result = supabase.table("claude_chat_memories").select("*").contains("tags", [tag]).order("chat_date", desc=True).execute()
+    return JSONResponse({"data": result.data, "_t": int(time.time() * 1000)})
+
+@app.get("/chat_memory/delete")
+async def delete_chat_memory(id: str = Query(...), token: str = Query(...)):
+    if not verify_token(token):
+        return html_response("错误", "Token验证失败")
+    supabase.table("claude_chat_memories").delete().eq("id", id).execute()
+    return html_response("删除成功！", "对话记忆已删除")
+
+
+# ==================== MCP工具定义（读+写） ====================
 
 MCP_TOOLS = [
-    # ===== 读取工具 =====
+    # 读取工具
     {
         "name": "get_expenses",
         "description": "获取Dream的消费记录。可以查询今日、本周、本月的消费统计。",
@@ -118,7 +346,7 @@ MCP_TOOLS = [
             }
         }
     },
-    # ===== 写入工具 =====
+    # 写入工具
     {
         "name": "add_expense",
         "description": "记录Dream的一笔消费。分类包括:吃饭、购物、交通、娱乐、零食、氪金、其他。",
@@ -194,21 +422,6 @@ MCP_TOOLS = [
                 "highlights": {"type": "string", "description": "今日亮点(可选)"}
             },
             "required": ["content", "mood"]
-        }
-    },
-    # ===== 删除工具（统一） =====
-    {
-        "name": "delete_record",
-        "description": "删除一条记录。支持删除：expense(消费)、schedule(日程)、memory(回忆)、chat_memory(对话记忆)、diary(日记)。可以按ID删除，或按关键词匹配删除最近一条，或直接删除最近一条。",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "description": "记录类型", "enum": ["expense", "schedule", "memory", "chat_memory", "diary"]},
-                "id": {"type": "string", "description": "记录ID（UUID格式，可选）"},
-                "keyword": {"type": "string", "description": "按关键词匹配删除最近一条（可选）"},
-                "delete_latest": {"type": "boolean", "description": "删除最近一条记录（可选，默认false）"}
-            },
-            "required": ["type"]
         }
     }
 ]
@@ -449,92 +662,6 @@ async def mcp_add_diary(args: dict) -> str:
     return f"日记写好啦～ 📔"
 
 
-# ==================== MCP删除函数（统一） ====================
-
-async def mcp_delete_record(args: dict) -> str:
-    record_type = args.get("type")
-    record_id = args.get("id")
-    keyword = args.get("keyword")
-    delete_latest = args.get("delete_latest", False)
-    
-    # 表名映射
-    table_map = {
-        "expense": "claude_expenses",
-        "schedule": "claude_schedules",
-        "memory": "claude_memories",
-        "chat_memory": "claude_chat_memories",
-        "diary": "claude_diaries"
-    }
-    
-    # 内容字段映射（用于关键词搜索和显示）
-    content_field_map = {
-        "expense": "note",
-        "schedule": "event_name",
-        "memory": "content",
-        "chat_memory": "chat_title",
-        "diary": "content"
-    }
-    
-    # 类型中文名
-    type_name_map = {
-        "expense": "消费记录",
-        "schedule": "日程",
-        "memory": "回忆",
-        "chat_memory": "对话记忆",
-        "diary": "日记"
-    }
-    
-    if record_type not in table_map:
-        return f"不支持的记录类型：{record_type}"
-    
-    table_name = table_map[record_type]
-    content_field = content_field_map[record_type]
-    type_name = type_name_map[record_type]
-    
-    if record_id:
-        # 按ID删除
-        # 先查找确认存在
-        found = supabase.table(table_name).select("*").eq("id", record_id).execute()
-        if not found.data:
-            return f"没有找到ID为 {record_id[:8]}... 的{type_name}"
-        
-        record = found.data[0]
-        supabase.table(table_name).delete().eq("id", record_id).execute()
-        
-        # 显示删除的内容预览
-        preview = str(record.get(content_field, ""))[:50]
-        return f"已删除{type_name}：{preview}..."
-    
-    elif keyword:
-        # 按关键词删除最近一条匹配的
-        found = supabase.table(table_name).select("*").ilike(content_field, f"%{keyword}%").order("created_at", desc=True).limit(1).execute()
-        if not found.data:
-            return f"没有找到包含「{keyword}」的{type_name}"
-        
-        record = found.data[0]
-        del_id = record["id"]
-        supabase.table(table_name).delete().eq("id", del_id).execute()
-        
-        preview = str(record.get(content_field, ""))[:50]
-        return f"已删除包含「{keyword}」的{type_name}：{preview}..."
-    
-    elif delete_latest:
-        # 删除最近一条
-        found = supabase.table(table_name).select("*").order("created_at", desc=True).limit(1).execute()
-        if not found.data:
-            return f"没有{type_name}可删除"
-        
-        record = found.data[0]
-        del_id = record["id"]
-        supabase.table(table_name).delete().eq("id", del_id).execute()
-        
-        preview = str(record.get(content_field, ""))[:50]
-        return f"已删除最近一条{type_name}：{preview}..."
-    
-    else:
-        return "请提供 id、keyword 或设置 delete_latest=true"
-
-
 # ==================== MCP Handler映射 ====================
 
 MCP_HANDLERS = {
@@ -553,8 +680,6 @@ MCP_HANDLERS = {
     "add_memory": mcp_add_memory,
     "add_chat_memory": mcp_add_chat_memory,
     "add_diary": mcp_add_diary,
-    # 删除
-    "delete_record": mcp_delete_record,
 }
 
 
@@ -578,7 +703,7 @@ async def mcp_endpoint(request: Request):
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "晨的助手", "version": "6.0"}
+                "serverInfo": {"name": "晨的助手", "version": "5.0"}
             }
         })
     
@@ -622,6 +747,11 @@ async def mcp_endpoint(request: Request):
         "id": req_id,
         "error": {"code": -32601, "message": f"Unknown method: {method}"}
     })
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "5.0", "mcp": "read+write", "timestamp": get_beijing_datetime().isoformat()}
 
 
 if __name__ == "__main__":
