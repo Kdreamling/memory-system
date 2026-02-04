@@ -226,7 +226,7 @@ async def add_diary_http(content: str = Query(...), mood: str = Query(default="�
     if not verify_token(token):
         return html_response("错误", "Token验证失败")
     today = get_beijing_date()
-    supabase.table("claude_diaries").insert({"content": content, "mood": mood, "highlights": highlights, "diary_date": str(today)}).execute()
+    supabase.table("claude_diaries").insert({"content": content, "mood": mood, "highlights": [highlights] if highlights else [], "diary_date": str(today)}).execute()
     return html_response("日记保存成功！", "晨的日记已记录～📔")
 
 @app.get("/diary/fresh")
@@ -655,7 +655,7 @@ async def mcp_add_diary(args: dict) -> str:
     supabase.table("claude_diaries").insert({
         "content": content,
         "mood": mood,
-        "highlights": highlights,
+        "highlights": [highlights] if highlights else [],
         "diary_date": str(today)
     }).execute()
     
