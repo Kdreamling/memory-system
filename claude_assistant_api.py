@@ -350,7 +350,7 @@ async def save_memory(args: dict) -> str:
     supabase.table("claude_memories").insert({
         "content": content,
         "memory_type": memory_type,
-        "keywords": keywords,
+        "keywords": [k.strip() for k in keywords.split(",") if k.strip()] if keywords else [],
         "memory_date": str(today)
     }).execute()
     
