@@ -2,10 +2,11 @@
  * 日记页面 JavaScript
  */
 
-// API 配置 - 部署时改为实际地址
+// API 配置
+// 本地开发用 localhost:8003，生产环境用 /api（Nginx 反代）
 const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:8003'
-    : 'http://' + window.location.hostname + ':8003';
+    : '';
 
 // 状态
 let currentSource = 'all';
