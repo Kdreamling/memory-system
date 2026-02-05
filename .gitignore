@@ -2,3 +2,8 @@
 *.log
 __pycache__/
 *.pyc
+chroma_db/
+node_modules/
+*.bak
+dist/
+.DS_Store
