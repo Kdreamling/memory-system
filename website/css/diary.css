@@ -1,0 +1,290 @@
+/* 日记页面样式 */
+
+/* 日记头部 */
+.diary-header {
+    padding: 3rem 1.5rem 2rem;
+    text-align: center;
+    background: linear-gradient(180deg, var(--color-bg-warm) 0%, var(--color-bg) 100%);
+}
+
+.diary-title {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--color-text);
+}
+
+.diary-subtitle {
+    color: var(--color-text-light);
+    font-size: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* 筛选标签 */
+.filter-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.filter-tab {
+    padding: 0.5rem 1.25rem;
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    background: var(--color-white);
+    color: var(--color-text-light);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.filter-tab:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+}
+
+.filter-tab.active {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-white);
+}
+
+/* 日记列表 */
+.diary-list {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+/* 日记卡片 */
+.diary-card {
+    background: var(--color-white);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+    box-shadow: var(--shadow-soft);
+    border: 1px solid var(--color-border);
+    transition: var(--transition);
+}
+
+.diary-card:hover {
+    box-shadow: var(--shadow-hover);
+}
+
+.diary-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.diary-date {
+    font-size: 0.9rem;
+    color: var(--color-text-light);
+}
+
+.diary-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.diary-source.chen {
+    background: #e8f4f0;
+    color: #2a9d8f;
+}
+
+.diary-source.kelivo {
+    background: #fef3e2;
+    color: #e76f51;
+}
+
+.diary-source-icon {
+    width: 14px;
+    height: 14px;
+}
+
+/* 心情和亮点 */
+.diary-mood {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--color-bg-warm);
+    border-radius: 8px;
+    font-size: 0.9rem;
+}
+
+.diary-mood-label {
+    color: var(--color-text-light);
+}
+
+.diary-mood-value {
+    color: var(--color-text);
+}
+
+.diary-highlights {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: linear-gradient(135deg, #fef9e7 0%, #fef3e2 100%);
+    border-radius: 8px;
+    border-left: 3px solid var(--color-accent);
+}
+
+.diary-highlights-label {
+    font-size: 0.8rem;
+    color: var(--color-accent-hover);
+    margin-bottom: 0.35rem;
+    font-weight: 500;
+}
+
+.diary-highlights-value {
+    font-size: 0.9rem;
+    color: var(--color-text);
+    line-height: 1.5;
+}
+
+/* 日记内容 */
+.diary-content {
+    font-size: 1rem;
+    line-height: 1.8;
+    color: var(--color-text);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.diary-content.truncated {
+    display: -webkit-box;
+    -webkit-line-clamp: 6;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.expand-btn {
+    display: inline-block;
+    margin-top: 0.75rem;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.expand-btn:hover {
+    color: var(--color-accent-hover);
+}
+
+/* 加载状态 */
+.loading {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--color-text-light);
+}
+
+.loading-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    margin: 0 auto 1rem;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 加载更多 */
+.load-more {
+    text-align: center;
+    padding: 1rem 1.5rem 3rem;
+}
+
+.load-more-btn {
+    padding: 0.75rem 2rem;
+    background: var(--color-white);
+    border: 1px solid var(--color-border);
+    border-radius: 24px;
+    color: var(--color-text);
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.load-more-btn:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+}
+
+.load-more-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 空状态和错误状态 */
+.empty-state,
+.error-state {
+    text-align: center;
+    padding: 4rem 1.5rem;
+    color: var(--color-text-light);
+}
+
+.retry-btn {
+    margin-top: 1rem;
+    padding: 0.5rem 1.5rem;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 20px;
+    color: var(--color-white);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.retry-btn:hover {
+    background: var(--color-accent-hover);
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+    .diary-header {
+        padding: 2rem 1rem 1.5rem;
+    }
+
+    .diary-title {
+        font-size: 1.75rem;
+    }
+
+    .diary-list {
+        padding: 1rem;
+    }
+
+    .diary-card {
+        padding: 1.25rem;
+    }
+
+    .diary-meta {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .filter-tabs {
+        gap: 0.35rem;
+    }
+
+    .filter-tab {
+        padding: 0.4rem 1rem;
+        font-size: 0.85rem;
+    }
+}

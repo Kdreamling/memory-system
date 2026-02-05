@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>晨的日记 - Dream's Space</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/diary.css">
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">Dream</a>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link">首页</a>
+                <a href="diary.html" class="nav-link active">晨的日记</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main">
+        <section class="diary-header">
+            <h1 class="diary-title">日记本</h1>
+            <p class="diary-subtitle">记录每一天的温暖时光</p>
+
+            <div class="filter-tabs">
+                <button class="filter-tab active" data-source="all">全部</button>
+                <button class="filter-tab" data-source="chen">晨的日记</button>
+                <button class="filter-tab" data-source="kelivo">Kelivo</button>
+            </div>
+        </section>
+
+        <section class="diary-list" id="diaryList">
+            <div class="loading" id="loading">
+                <div class="loading-spinner"></div>
+                <p>正在加载日记...</p>
+            </div>
+        </section>
+
+        <div class="load-more" id="loadMore" style="display: none;">
+            <button class="load-more-btn" id="loadMoreBtn">加载更多</button>
+        </div>
+
+        <div class="empty-state" id="emptyState" style="display: none;">
+            <p>暂无日记</p>
+        </div>
+
+        <div class="error-state" id="errorState" style="display: none;">
+            <p>加载失败，请稍后重试</p>
+            <button class="retry-btn" onclick="loadDiaries()">重试</button>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <p>Made with care by Dream & Chen</p>
+    </footer>
+
+    <script src="js/diary.js"></script>
+</body>
+</html>
