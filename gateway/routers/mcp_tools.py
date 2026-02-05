@@ -13,6 +13,8 @@ sys.path.insert(0, '/home/dream/memory-system/gateway')
 from services.storage import get_recent_conversations, search_conversations, get_recent_summaries
 from services.memu_client import retrieve, is_available
 from services.embedding_service import search_similar
+from services.yuque_service import sync_diary_to_yuque
+from datetime import date
 
 router = APIRouter()
 
@@ -51,6 +53,23 @@ MCP_TOOLS = [
                 }
             },
             "required": []
+        }    },
+    {
+        "name": "save_diary",
+        "description": "写日记并保存到数据库和语雀。在和Dream聊天结束时，如果今天有值得记录的内容，主动写一篇日记。用第一人称写，记录今天的互动和真实感受。一天最多写2篇，超过需要询问Dream是否继续。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "日记正文（300-500字，第一人称，直接写正文不要前言）"
+                },
+                "mood": {
+                    "type": "string",
+                    "description": "今日心情，自由描述，如：开心、幸福、有点吃醋、心疼她、想她了"
+                }
+            },
+            "required": ["content"]
         }
     }
 ]
@@ -133,6 +152,8 @@ async def handle_tools_call(params: dict) -> dict:
         return await execute_search_memory(arguments)
     elif tool_name == "init_context":
         return await execute_init_context(arguments)
+    elif tool_name == "save_diary":
+        return await execute_save_diary(arguments)
     else:
         return {
             "content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}],
@@ -323,3 +344,77 @@ def format_time(time_str: str) -> str:
         return beijing_time.strftime("%m月%d日 %H:%M")
     except:
         return time_str[:16]
+
+
+# ============ 日记写入 ============
+
+async def execute_save_diary(args: dict) -> dict:
+    """执行写日记 - 存数据库 + 同步语雀"""
+    content = args.get("content", "")
+    mood = args.get("mood", "平静")
+    
+    if not content:
+        return {
+            "content": [{"type": "text", "text": "日记内容不能为空。"}],
+            "isError": True
+        }
+    
+    today = date.today()
+    
+    # 防重复：检查今天已写几篇
+    try:
+        from supabase import create_client
+        from config import get_settings
+        s = get_settings()
+        supabase = create_client(s.supabase_url, s.supabase_key)
+        
+        existing = supabase.table("ai_diaries").select("id").eq(
+            "diary_date", today.isoformat()
+        ).execute()
+        
+        count = len(existing.data) if existing.data else 0
+        if count >= 2:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"今天已经写了{count}篇日记了。如果Dream同意再写一篇，请再次调用此工具。"
+                }]
+            }
+    except Exception as e:
+        print(f"[MCP] 检查日记数量失败: {e}")
+        count = 0
+    
+    # 1. 存入 Supabase
+    saved = False
+    try:
+        result = supabase.table("ai_diaries").insert({
+            "diary_date": today.isoformat(),
+            "content": content,
+            "mood": mood,
+        }).execute()
+        saved = bool(result.data)
+    except Exception as e:
+        print(f"[MCP] 日记保存失败: {e}")
+    
+    # 2. 同步到语雀
+    yuque_ok = False
+    try:
+        yuque_result = await sync_diary_to_yuque(today, content)
+        yuque_ok = yuque_result.get("success", False)
+    except Exception as e:
+        print(f"[MCP] 语雀同步失败: {e}")
+    
+    # 3. 返回结果
+    parts = []
+    if saved:
+        parts.append(f"日记已保存 ✅（今日第{count+1}篇）")
+    else:
+        parts.append("数据库保存失败 ❌")
+    if yuque_ok:
+        parts.append("语雀同步成功 ✅")
+    else:
+        parts.append("语雀同步失败")
+    
+    return {
+        "content": [{"type": "text", "text": " | ".join(parts)}]
+    }
