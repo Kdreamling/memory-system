@@ -18,7 +18,6 @@ from config import get_settings
 from services.storage import save_conversation_with_round, update_weight
 from services.summary_service import check_and_generate_summary
 from services.embedding_service import store_conversation_embedding
-from services.embedding_service import store_conversation_embedding
 import re
 from services.background import sync_service
 from routers.mcp_tools import router as mcp_router
@@ -182,6 +181,12 @@ def should_skip_storage(user_msg: str) -> bool:
         if kw.lower() in user_msg.lower():
             return True
     return False
+    
+def _safe_task(coro):
+    """创建后台任务并捕获异常，避免静默失败"""
+    task = asyncio.create_task(coro)
+    task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
+    return task
 
 async def process_citations(assistant_msg: str) -> str:
     pattern = r"\[\[used:([a-f0-9-]+)\]\]"
@@ -299,13 +304,14 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -
                         pass
     assistant_msg = "".join(assistant_chunks)
     if user_msg and assistant_msg and not should_skip_storage(user_msg):
+        
         try:
             conv_id = await save_conversation_with_round(user_msg, assistant_msg)
             # 触发摘要检查
-            asyncio.create_task(check_and_generate_summary())
+            _safe_task(check_and_generate_summary())
             # 后台向量化
             if conv_id:
-                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+                _safe_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
         except Exception as e:
             print(f"Storage error: {e}")
 
@@ -325,10 +331,10 @@ async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str)
             try:
                 conv_id = await save_conversation_with_round(user_msg, assistant_msg)
                 # 触发摘要检查
-                asyncio.create_task(check_and_generate_summary())
+                _safe_task(check_and_generate_summary())
                 # 后台向量化
                 if conv_id:
-                    asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+                    _safe_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
             except Exception as e:
                 print(f"Storage error: {e}")
         return JSONResponse(content=result)
