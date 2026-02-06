@@ -87,7 +87,7 @@ MCP_TOOLS = [
             },
             "required": []
         }
-    }
+    },
     {
         "name": "save_diary",
         "description": "写日记并保存到数据库和语雀。在和Dream聊天结束时，如果今天有值得记录的内容，主动写一篇日记。用第一人称写，记录今天的互动和真实感受。一天最多写2篇，超过需要询问Dream是否继续。",
@@ -286,7 +286,7 @@ async def handle_tools_call(params: dict) -> dict:
         return await execute_search_memory(arguments)
     elif tool_name == "init_context":
         return await execute_init_context(arguments)
-        elif tool_name == "save_diary":
+    elif tool_name == "save_diary":
         return await execute_save_diary(arguments)
     else:
         return {
