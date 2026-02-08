@@ -1,6 +1,7 @@
 """
 Memory Gateway - 多后端代理网关
 支持 DeepSeek、OpenRouter（GPT-4o、Claude、Gemini等）统一转发
+v2.1 - 修复reasoning_content丢失、空回（不使用全局连接池）
 """
 
 from fastapi import FastAPI, Request, HTTPException
@@ -208,9 +209,29 @@ def get_backend_config(model: str) -> dict:
     print(f"Unknown model '{model}', falling back to deepseek-chat")
     return BACKENDS["deepseek-chat"]
 
+def is_local_url(url: str) -> bool:
+    """判断是否为本地地址（本地不需要代理）"""
+    return "localhost" in url or "127.0.0.1" in url
+
+def get_proxy(url: str) -> Optional[str]:
+    """本地请求不用代理，外部请求用代理"""
+    if is_local_url(url):
+        return None
+    return settings.proxy_url if settings.proxy_url else None
+
+def get_timeout(model_name: str) -> float:
+    """思考模型给更长超时"""
+    thinking_keywords = ["2.5-pro", "reasoner", "thinking", "opus"]
+    for kw in thinking_keywords:
+        if kw in model_name.lower():
+            return 300.0
+    return 180.0
+
+# ============ 生命周期 ============
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Starting Memory Gateway...")
+    print("Starting Memory Gateway v2.1...")
     print(f"Supported models: {list(BACKENDS.keys())}")
     try:
         await sync_service.start()
@@ -228,7 +249,7 @@ app.include_router(mcp_router)
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat(), "supported_models": list(BACKENDS.keys())}
+    return {"status": "healthy", "version": "2.1", "timestamp": datetime.now().isoformat(), "supported_models": list(BACKENDS.keys())}
 
 @app.get("/models")
 async def list_models():
@@ -269,8 +290,7 @@ async def proxy_chat_completions(request: Request):
     
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {requested_model} -> {backend['model_name']} | stream={is_stream}")
     
-    # 只有假流式模型走非流式路径（支持工具调用但较慢）
-    # 流式抗截断保持正常流式（快但不支持工具调用）
+    # 假流式模型走非流式请求再包装成SSE
     if "假流式" in requested_model:
         return await fake_stream_to_normal(target_url, headers, body, user_msg)
     elif is_stream:
@@ -282,35 +302,34 @@ async def proxy_chat_completions(request: Request):
 
 async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str):
     """
-    假流式修复：
-    1. 去掉模型名的"假流式/"前缀
-    2. 以非流式方式请求GCLI2API，拿到完整JSON响应（含tool_calls）
-    3. 把响应包装成标准SSE流返回给Kelivo
-    4. 同时存储到数据库
+    假流式：
+    1. 去掉模型名前缀，以非流式方式请求
+    2. 解析 content + reasoning_content + tool_calls
+    3. 包装成标准SSE流返回给Kelivo（先发思考再发回答）
+    4. 存储到数据库
     """
-    # 去掉假流式/流式抗截断前缀，以非流式方式请求
     body["stream"] = False
     if isinstance(body.get("model"), str):
         body["model"] = body["model"].replace("假流式/", "", 1).replace("流式抗截断/", "", 1)
     
     print(f"[FakeStream] Requesting non-stream: {body['model']}")
     
-    # localhost不需要代理
-    proxy = None
+    proxy = get_proxy(url)
+    timeout = get_timeout(body.get("model", ""))
     
     try:
-        async with httpx.AsyncClient(timeout=180.0, proxy=proxy) as client:
+        async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
             response = await client.post(url, headers=headers, json=body)
             if response.status_code != 200:
                 error_text = response.text
-                print(f"[FakeStream] Backend error {response.status_code}: {error_text[:200]}")
+                print(f"[FakeStream] Backend error {response.status_code}: {error_text[:300]}")
                 return JSONResponse(
                     status_code=response.status_code,
                     content={"error": {"message": error_text, "code": response.status_code}}
                 )
             result = response.json()
     except httpx.TimeoutException:
-        print("[FakeStream] Request timeout")
+        print(f"[FakeStream] Request timeout ({timeout}s)")
         return JSONResponse(status_code=504, content={"error": {"message": "Gateway timeout", "code": 504}})
     except Exception as e:
         print(f"[FakeStream] Connection error: {e}")
@@ -319,7 +338,8 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
     # 解析响应
     choice = result.get("choices", [{}])[0] if result.get("choices") else {}
     message = choice.get("message", {})
-    assistant_msg = message.get("content", "") or ""
+    assistant_content = message.get("content", "") or ""
+    reasoning_content = message.get("reasoning_content", "") or ""
     tool_calls = message.get("tool_calls")
     model_name = result.get("model", "")
     msg_id = result.get("id", f"chatcmpl-fake-{int(datetime.now().timestamp())}")
@@ -327,14 +347,21 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
     
     if tool_calls:
         print(f"[FakeStream] Got {len(tool_calls)} tool_calls: {[tc.get('function', {}).get('name', '?') for tc in tool_calls]}")
+    if reasoning_content:
+        print(f"[FakeStream] Got reasoning: {len(reasoning_content)} chars")
+    if assistant_content:
+        print(f"[FakeStream] Got content: {len(assistant_content)} chars")
+    if not assistant_content and not reasoning_content and not tool_calls:
+        print(f"[FakeStream] WARNING: Empty response! Full result: {json.dumps(result, ensure_ascii=False)[:500]}")
     
-    # 存储到数据库（只存文本内容，tool_calls不存）
-    if user_msg and assistant_msg and not should_skip_storage(user_msg):
+    # 存储到数据库（优先存content，content为空则存reasoning）
+    storage_text = assistant_content or reasoning_content
+    if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, assistant_msg)
+            conv_id = await save_conversation_with_round(user_msg, storage_text)
             asyncio.create_task(check_and_generate_summary())
             if conv_id:
-                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
             print(f"[FakeStream] Saved to DB")
         except Exception as e:
             print(f"[FakeStream] Storage error: {e}")
@@ -345,13 +372,30 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
         
         if tool_calls:
             # ===== 工具调用模式 =====
-            # 流式tool_calls格式：第一个chunk带role+完整工具定义，后续chunk发参数
+            # 先发送思考过程（如果有）
+            if reasoning_content:
+                chunk_size = 4
+                for i in range(0, len(reasoning_content), chunk_size):
+                    text_chunk = reasoning_content[i:i + chunk_size]
+                    chunk_data = {
+                        "id": msg_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"reasoning_content": text_chunk},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode()
+                    await asyncio.sleep(0.02)
+            
             for tc_idx, tc in enumerate(tool_calls):
                 func = tc.get("function", {})
                 tc_id = tc.get("id", f"call_{tc_idx}")
                 arguments = func.get("arguments", "")
                 
-                # 第一个chunk：role + 工具名 + 空参数
                 first_delta = {
                     "tool_calls": [{
                         "index": tc_idx,
@@ -369,7 +413,6 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                 
                 yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': first_delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n".encode()
                 
-                # 第二个chunk：发送完整arguments
                 if arguments:
                     arg_delta = {
                         "tool_calls": [{
@@ -379,12 +422,11 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                     }
                     yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': arg_delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n".encode()
             
-            # 结束标记：finish_reason必须是tool_calls
             yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}, ensure_ascii=False)}\n\n".encode()
             yield b"data: [DONE]\n\n"
         
         else:
-            # ===== 普通文本模式 =====
+            # ===== 文本模式（含思考过程） =====
             # 第一个chunk带role
             first_chunk = {
                 "id": msg_id,
@@ -399,11 +441,30 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
             }
             yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode()
             
-            # 分小块输出文本
-            if assistant_msg:
+            # 先发送 reasoning_content（思考过程）
+            if reasoning_content:
                 chunk_size = 4
-                for i in range(0, len(assistant_msg), chunk_size):
-                    text_chunk = assistant_msg[i:i + chunk_size]
+                for i in range(0, len(reasoning_content), chunk_size):
+                    text_chunk = reasoning_content[i:i + chunk_size]
+                    chunk_data = {
+                        "id": msg_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"reasoning_content": text_chunk},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode()
+                    await asyncio.sleep(0.02)
+            
+            # 再发送 content（最终回答）
+            if assistant_content:
+                chunk_size = 4
+                for i in range(0, len(assistant_content), chunk_size):
+                    text_chunk = assistant_content[i:i + chunk_size]
                     chunk_data = {
                         "id": msg_id,
                         "object": "chat.completion.chunk",
@@ -428,11 +489,15 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
 
 async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -> AsyncGenerator[bytes, None]:
     assistant_chunks = []
-    proxy = settings.proxy_url if settings.proxy_url else None
-    async with httpx.AsyncClient(timeout=120.0, proxy=proxy) as client:
+    reasoning_chunks = []
+    proxy = get_proxy(url)
+    timeout = get_timeout(body.get("model", ""))
+    
+    async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 error_body = await response.aread()
+                print(f"[Stream] Backend error {response.status_code}: {error_body.decode()[:300]}")
                 yield f"data: {json.dumps({'error': error_body.decode()})}\n\n".encode()
                 return
             async for line in response.aiter_lines():
@@ -444,47 +509,75 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -
                         data = json.loads(line[6:])
                         delta = data.get("choices", [{}])[0].get("delta", {})
                         content = delta.get("content", "")
+                        reasoning = delta.get("reasoning_content", "")
                         if content:
                             assistant_chunks.append(content)
+                        if reasoning:
+                            reasoning_chunks.append(reasoning)
                     except:
                         pass
+    
     assistant_msg = "".join(assistant_chunks)
-    if user_msg and assistant_msg and not should_skip_storage(user_msg):
+    reasoning_msg = "".join(reasoning_chunks)
+    
+    # 存储：优先存content，content为空则存reasoning
+    storage_text = assistant_msg or reasoning_msg
+    if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, assistant_msg)
-            # 触发摘要检查
+            conv_id = await save_conversation_with_round(user_msg, storage_text)
             asyncio.create_task(check_and_generate_summary())
-            # 后台向量化
             if conv_id:
-                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
         except Exception as e:
-            print(f"Storage error: {e}")
+            print(f"[Stream] Storage error: {e}")
 
 # ============ 非流式处理 ============
 
 async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str) -> JSONResponse:
-    proxy = settings.proxy_url if settings.proxy_url else None
-    async with httpx.AsyncClient(timeout=120.0, proxy=proxy) as client:
-        response = await client.post(url, headers=headers, json=body)
-        if response.status_code != 200:
-            return JSONResponse(status_code=response.status_code, content={"error": response.text})
-        result = response.json()
-        assistant_msg = ""
+    proxy = get_proxy(url)
+    timeout = get_timeout(body.get("model", ""))
+    
+    try:
+        async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
+            response = await client.post(url, headers=headers, json=body)
+    except httpx.TimeoutException:
+        print(f"[NonStream] Request timeout ({timeout}s)")
+        return JSONResponse(status_code=504, content={"error": "Gateway timeout"})
+    except Exception as e:
+        print(f"[NonStream] Connection error: {e}")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+    
+    if response.status_code != 200:
+        print(f"[NonStream] Backend error {response.status_code}: {response.text[:300]}")
+        return JSONResponse(status_code=response.status_code, content={"error": response.text})
+    
+    result = response.json()
+    
+    # 提取content和reasoning_content
+    assistant_msg = ""
+    reasoning_msg = ""
+    try:
+        message = result["choices"][0]["message"]
+        assistant_msg = message.get("content", "") or ""
+        reasoning_msg = message.get("reasoning_content", "") or ""
+    except:
+        pass
+    
+    if not assistant_msg and not reasoning_msg:
+        print(f"[NonStream] WARNING: Empty response! Full result: {json.dumps(result, ensure_ascii=False)[:500]}")
+    
+    # 存储：优先存content，content为空则存reasoning
+    storage_text = assistant_msg or reasoning_msg
+    if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            assistant_msg = result["choices"][0]["message"]["content"]
-        except:
-            pass
-        if user_msg and assistant_msg and not should_skip_storage(user_msg):
-            try:
-                conv_id = await save_conversation_with_round(user_msg, assistant_msg)
-                # 触发摘要检查
-                asyncio.create_task(check_and_generate_summary())
-                # 后台向量化
-                if conv_id:
-                    asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
-            except Exception as e:
-                print(f"Storage error: {e}")
-        return JSONResponse(content=result)
+            conv_id = await save_conversation_with_round(user_msg, storage_text)
+            asyncio.create_task(check_and_generate_summary())
+            if conv_id:
+                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
+        except Exception as e:
+            print(f"[NonStream] Storage error: {e}")
+    
+    return JSONResponse(content=result)
 
 if __name__ == "__main__":
     import uvicorn
