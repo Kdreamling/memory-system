@@ -88,6 +88,18 @@ MCP_TOOLS = [
                 "limit": {
                     "type": "integer",
                     "description": "返回数量限制，默认10"
+                },
+                "date": {
+                    "type": "string",
+                    "description": "[expense专用] 查具体某天，格式YYYY-MM-DD"
+                },
+                "date_from": {
+                    "type": "string",
+                    "description": "[expense专用] 时间段开始，格式YYYY-MM-DD"
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "[expense专用] 时间段结束，格式YYYY-MM-DD"
                 }
             },
             "required": ["data_type"]
@@ -115,6 +127,10 @@ MCP_TOOLS = [
                 "note": {
                     "type": "string",
                     "description": "[expense] 备注"
+                },
+                "date": {
+                    "type": "string",
+                    "description": "[expense] 消费日期，格式YYYY-MM-DD，不填默认当天"
                 },
                 "content": {
                     "type": "string",
@@ -201,51 +217,56 @@ async def mcp_query(args: dict) -> str:
         return f"不支持的数据类型：{data_type}"
 
 async def query_expense(args: dict) -> str:
+    date = args.get("date")
+    date_from = args.get("date_from")
+    date_to = args.get("date_to")
     period = args.get("period", "today")
     today = get_beijing_date()
-    
+
+    def format_records(records, label):
+        if not records:
+            return f"{label}暂无消费记录。"
+        total = sum(float(r["amount"]) for r in records)
+        by_cat = {}
+        for r in records:
+            cat = r["category"]
+            by_cat[cat] = round(by_cat.get(cat, 0) + float(r["amount"]), 2)
+        items = []
+        for r in records:
+            item = f"- {r['category']}：{r['amount']}元"
+            if r.get('note'):
+                item += f"（{r['note']}）"
+            items.append(item)
+        cat_items = [f"- {cat}：{amt}元" for cat, amt in by_cat.items()]
+        return f"{label}消费明细：\n" + "\n".join(items) + f"\n\n按分类：\n" + "\n".join(cat_items) + f"\n\n总计：{round(total, 2)}元"
+
+    if date:
+        result = supabase.table("claude_expenses").select("*").eq("expense_date", date).order("created_at").execute()
+        return format_records(result.data, f"{date} ")
+
+    if date_from and date_to:
+        result = supabase.table("claude_expenses").select("*").gte("expense_date", date_from).lte("expense_date", date_to).order("expense_date").execute()
+        return format_records(result.data, f"{date_from} ~ {date_to} ")
+
     if period == "today":
         result = supabase.table("claude_expenses").select("*").eq("expense_date", str(today)).order("created_at").execute()
-        records = result.data
-        total = sum(float(r["amount"]) for r in records)
-        if not records:
-            return f"今日（{today}）暂无消费记录。"
-        items = [f"- {r['category']}：{r['amount']}元" + (f"（{r['note']}）" if r.get('note') else "") for r in records]
-        return f"今日（{today}）消费：\n" + "\n".join(items) + f"\n\n总计：{round(total, 2)}元"
-    
+        return format_records(result.data, f"今日（{today}）")
+
     elif period == "week":
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=6)
-        result = supabase.table("claude_expenses").select("*").gte("expense_date", str(week_start)).lte("expense_date", str(week_end)).execute()
-        records = result.data
-        total = sum(float(r["amount"]) for r in records)
-        by_category = {}
-        for r in records:
-            cat = r["category"]
-            by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
-        if not records:
-            return f"本周（{week_start} ~ {week_end}）暂无消费记录。"
-        cat_items = [f"- {cat}：{amt}元" for cat, amt in by_category.items()]
-        return f"本周（{week_start} ~ {week_end}）消费：\n" + "\n".join(cat_items) + f"\n\n总计：{round(total, 2)}元"
-    
+        result = supabase.table("claude_expenses").select("*").gte("expense_date", str(week_start)).lte("expense_date", str(week_end)).order("expense_date").execute()
+        return format_records(result.data, f"本周（{week_start} ~ {week_end}）")
+
     elif period == "month":
         now = get_beijing_datetime()
         month = now.strftime("%Y-%m")
         year, mon = map(int, month.split("-"))
         next_month = f"{year+1}-01-01" if mon == 12 else f"{year}-{mon+1:02d}-01"
-        result = supabase.table("claude_expenses").select("*").gte("expense_date", f"{month}-01").lt("expense_date", next_month).execute()
-        records = result.data
-        total = sum(float(r["amount"]) for r in records)
-        by_category = {}
-        for r in records:
-            cat = r["category"]
-            by_category[cat] = round(by_category.get(cat, 0) + float(r["amount"]), 2)
-        if not records:
-            return f"本月（{month}）暂无消费记录。"
-        cat_items = [f"- {cat}：{amt}元" for cat, amt in by_category.items()]
-        return f"本月（{month}）消费：\n" + "\n".join(cat_items) + f"\n\n总计：{round(total, 2)}元"
-    
-    return "未知的时间范围，请用 today/week/month"
+        result = supabase.table("claude_expenses").select("*").gte("expense_date", f"{month}-01").lt("expense_date", next_month).order("expense_date").execute()
+        return format_records(result.data, f"本月（{month}）")
+
+    return "未知的时间范围，请用 today/week/month 或指定 date/date_from+date_to"
 
 async def query_memory(args: dict) -> str:
     keyword = args.get("keyword", "")
@@ -319,24 +340,25 @@ async def save_expense(args: dict) -> str:
     amount = args.get("amount")
     category = args.get("category", "其他")
     note = args.get("note", "")
+    date = args.get("date")
     
     if not amount:
         return "请提供金额！"
     
-    # 消费分类验证
     valid_categories = ["吃饭", "购物", "交通", "娱乐", "零食", "氪金", "其他"]
     if category not in valid_categories:
         category = "其他"
     
-    today = get_beijing_date()
+    expense_date = date if date else str(get_beijing_date())
     supabase.table("claude_expenses").insert({
         "amount": amount,
         "category": category,
         "note": note,
-        "expense_date": str(today)
+        "expense_date": expense_date
     }).execute()
     
-    return f"记好啦！{category} {amount}元" + (f"（{note}）" if note else "") + " 💰"
+    date_info = f"（{expense_date}）" if date else ""
+    return f"记好啦！{category} {amount}元" + (f"（{note}）" if note else "") + date_info + " 💰"
 
 async def save_memory(args: dict) -> str:
     content = args.get("content")
