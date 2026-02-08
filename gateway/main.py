@@ -237,6 +237,7 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat(), "supported_models": list(BACKENDS.keys())}
 
 @app.get("/models")
+@app.get("/v1/models")
 async def list_models():
     return {"models": list(BACKENDS.keys()), "aliases": MODEL_ALIASES}
 
@@ -282,26 +283,30 @@ async def proxy_chat_completions(request: Request):
 
 async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -> AsyncGenerator[bytes, None]:
     assistant_chunks = []
-    proxy = settings.proxy_url if settings.proxy_url else None
+    proxy = settings.proxy_url if (settings.proxy_url and "localhost" not in url and "127.0.0.1" not in url) else None
     async with httpx.AsyncClient(timeout=120.0, proxy=proxy) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 error_body = await response.aread()
                 yield f"data: {json.dumps({'error': error_body.decode()})}\n\n".encode()
                 return
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    yield f"{line}\n\n".encode()
-                    if line == "data: [DONE]":
-                        continue
-                    try:
-                        data = json.loads(line[6:])
-                        delta = data.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            assistant_chunks.append(content)
-                    except:
-                        pass
+            try:
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        yield f"{line}\n\n".encode()
+                        if line == "data: [DONE]":
+                            continue
+                        try:
+                            data = json.loads(line[6:])
+                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                assistant_chunks.append(content)
+                        except:
+                            pass
+            except Exception as stream_err:
+                print(f"[Stream] Connection closed: {stream_err}")
+            yield b"data: [DONE]\n\n"
     assistant_msg = "".join(assistant_chunks)
     if user_msg and assistant_msg and not should_skip_storage(user_msg):
         
@@ -315,8 +320,76 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -
         except Exception as e:
             print(f"Storage error: {e}")
 
+async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str) -> JSONResponse:
+    """假流式：从后端收流式数据，拼成非流式响应返回"""
+    body["stream"] = True
+    assistant_chunks = []
+    reasoning_chunks = []
+    model_name = ""
+    msg_id = ""
+    proxy = settings.proxy_url if (settings.proxy_url and "localhost" not in url and "127.0.0.1" not in url) else None
+    try:
+        async with httpx.AsyncClient(timeout=180.0, proxy=proxy) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    return JSONResponse(status_code=response.status_code, content={"error": error_body.decode()})
+                try:
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        try:
+                            data = json.loads(line[6:])
+                            if not msg_id and data.get("id"):
+                                msg_id = data["id"]
+                                model_name = data.get("model", "")
+                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            if delta.get("content"):
+                                assistant_chunks.append(delta["content"])
+                            if delta.get("reasoning_content"):
+                                reasoning_chunks.append(delta["reasoning_content"])
+                        except:
+                            pass
+                except Exception as e:
+                    print(f"[FakeStream] Read ended: {e}")
+    except Exception as e:
+        print(f"[FakeStream] Connection error: {e}")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+    assistant_msg = "".join(assistant_chunks)
+    result = {
+        "id": msg_id or "chatcmpl-fake",
+        "object": "chat.completion",
+        "created": int(datetime.now().timestamp()),
+        "model": model_name,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": assistant_msg}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    }
+    if user_msg and assistant_msg and not should_skip_storage(user_msg):
+        try:
+            conv_id = await save_conversation_with_round(user_msg, assistant_msg)
+            _safe_task(check_and_generate_summary())
+            if conv_id:
+                _safe_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+        except Exception as e:
+            print(f"[FakeStream] Storage error: {e}")
+    # 以标准SSE格式返回给Kelivo
+    async def fake_generate():
+        base = {"id": msg_id or "chatcmpl-fake", "object": "chat.completion.chunk", "created": int(datetime.now().timestamp()), "model": model_name}
+        reasoning_text = "".join(reasoning_chunks)
+        if reasoning_text:
+            for i in range(0, len(reasoning_text), 50):
+                chunk = dict(base)
+                chunk["choices"] = [{"index": 0, "delta": {"reasoning_content": reasoning_text[i:i+50]}, "finish_reason": None}]
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+        chunk = dict(base)
+        chunk["choices"] = [{"index": 0, "delta": {"role": "assistant", "content": assistant_msg}, "finish_reason": "stop"}]
+        yield f"data: {json.dumps(chunk)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+    return StreamingResponse(fake_generate(), media_type="text/event-stream")
+
 async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str) -> JSONResponse:
-    proxy = settings.proxy_url if settings.proxy_url else None
+    proxy = settings.proxy_url if (settings.proxy_url and "localhost" not in url and "127.0.0.1" not in url) else None
     async with httpx.AsyncClient(timeout=120.0, proxy=proxy) as client:
         response = await client.post(url, headers=headers, json=body)
         if response.status_code != 200:

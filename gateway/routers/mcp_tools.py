@@ -214,7 +214,7 @@ async def handle_mcp_sse(request: Request):
                 # 每 25 秒发送一个注释行作为心跳
                 # SSE 规范中，以冒号开头的行是注释，客户端会忽略但连接保持活跃
                 yield ": heartbeat\n\n"
-                await asyncio.sleep(25)
+                await asyncio.sleep(15)
         except asyncio.CancelledError:
             print(f"[MCP] SSE connection closed for session {sid[:8] if sid else 'unknown'}...")
 
