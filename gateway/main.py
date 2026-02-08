@@ -181,12 +181,6 @@ def should_skip_storage(user_msg: str) -> bool:
         if kw.lower() in user_msg.lower():
             return True
     return False
-    
-def _safe_task(coro):
-    """创建后台任务并捕获异常，避免静默失败"""
-    task = asyncio.create_task(coro)
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() and t.exception() else None)
-    return task
 
 async def process_citations(assistant_msg: str) -> str:
     pattern = r"\[\[used:([a-f0-9-]+)\]\]"
@@ -237,7 +231,6 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat(), "supported_models": list(BACKENDS.keys())}
 
 @app.get("/models")
-@app.get("/v1/models")
 async def list_models():
     return {"models": list(BACKENDS.keys()), "aliases": MODEL_ALIASES}
 
@@ -276,120 +269,201 @@ async def proxy_chat_completions(request: Request):
     
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {requested_model} -> {backend['model_name']} | stream={is_stream}")
     
-    if is_stream:
+    # 只有假流式模型走非流式路径（支持工具调用但较慢）
+    # 流式抗截断保持正常流式（快但不支持工具调用）
+    if "假流式" in requested_model:
+        return await fake_stream_to_normal(target_url, headers, body, user_msg)
+    elif is_stream:
         return StreamingResponse(stream_and_store(target_url, headers, body, user_msg), media_type="text/event-stream")
     else:
         return await non_stream_request(target_url, headers, body, user_msg)
 
+# ============ 假流式处理 ============
+
+async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str):
+    """
+    假流式修复：
+    1. 去掉模型名的"假流式/"前缀
+    2. 以非流式方式请求GCLI2API，拿到完整JSON响应（含tool_calls）
+    3. 把响应包装成标准SSE流返回给Kelivo
+    4. 同时存储到数据库
+    """
+    # 去掉假流式/流式抗截断前缀，以非流式方式请求
+    body["stream"] = False
+    if isinstance(body.get("model"), str):
+        body["model"] = body["model"].replace("假流式/", "", 1).replace("流式抗截断/", "", 1)
+    
+    print(f"[FakeStream] Requesting non-stream: {body['model']}")
+    
+    # localhost不需要代理
+    proxy = None
+    
+    try:
+        async with httpx.AsyncClient(timeout=180.0, proxy=proxy) as client:
+            response = await client.post(url, headers=headers, json=body)
+            if response.status_code != 200:
+                error_text = response.text
+                print(f"[FakeStream] Backend error {response.status_code}: {error_text[:200]}")
+                return JSONResponse(
+                    status_code=response.status_code,
+                    content={"error": {"message": error_text, "code": response.status_code}}
+                )
+            result = response.json()
+    except httpx.TimeoutException:
+        print("[FakeStream] Request timeout")
+        return JSONResponse(status_code=504, content={"error": {"message": "Gateway timeout", "code": 504}})
+    except Exception as e:
+        print(f"[FakeStream] Connection error: {e}")
+        return JSONResponse(status_code=502, content={"error": {"message": str(e), "code": 502}})
+    
+    # 解析响应
+    choice = result.get("choices", [{}])[0] if result.get("choices") else {}
+    message = choice.get("message", {})
+    assistant_msg = message.get("content", "") or ""
+    tool_calls = message.get("tool_calls")
+    model_name = result.get("model", "")
+    msg_id = result.get("id", f"chatcmpl-fake-{int(datetime.now().timestamp())}")
+    finish_reason = choice.get("finish_reason", "stop")
+    
+    if tool_calls:
+        print(f"[FakeStream] Got {len(tool_calls)} tool_calls: {[tc.get('function', {}).get('name', '?') for tc in tool_calls]}")
+    
+    # 存储到数据库（只存文本内容，tool_calls不存）
+    if user_msg and assistant_msg and not should_skip_storage(user_msg):
+        try:
+            conv_id = await save_conversation_with_round(user_msg, assistant_msg)
+            asyncio.create_task(check_and_generate_summary())
+            if conv_id:
+                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+            print(f"[FakeStream] Saved to DB")
+        except Exception as e:
+            print(f"[FakeStream] Storage error: {e}")
+    
+    # 包装成标准SSE流返回给Kelivo
+    async def generate_sse():
+        created = int(datetime.now().timestamp())
+        
+        if tool_calls:
+            # ===== 工具调用模式 =====
+            # 流式tool_calls格式：第一个chunk带role+完整工具定义，后续chunk发参数
+            for tc_idx, tc in enumerate(tool_calls):
+                func = tc.get("function", {})
+                tc_id = tc.get("id", f"call_{tc_idx}")
+                arguments = func.get("arguments", "")
+                
+                # 第一个chunk：role + 工具名 + 空参数
+                first_delta = {
+                    "tool_calls": [{
+                        "index": tc_idx,
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {
+                            "name": func.get("name", ""),
+                            "arguments": ""
+                        }
+                    }]
+                }
+                if tc_idx == 0:
+                    first_delta["role"] = "assistant"
+                    first_delta["content"] = None
+                
+                yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': first_delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n".encode()
+                
+                # 第二个chunk：发送完整arguments
+                if arguments:
+                    arg_delta = {
+                        "tool_calls": [{
+                            "index": tc_idx,
+                            "function": {"arguments": arguments}
+                        }]
+                    }
+                    yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': arg_delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n".encode()
+            
+            # 结束标记：finish_reason必须是tool_calls
+            yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}, ensure_ascii=False)}\n\n".encode()
+            yield b"data: [DONE]\n\n"
+        
+        else:
+            # ===== 普通文本模式 =====
+            # 第一个chunk带role
+            first_chunk = {
+                "id": msg_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_name,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": ""},
+                    "finish_reason": None
+                }]
+            }
+            yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode()
+            
+            # 分小块输出文本
+            if assistant_msg:
+                chunk_size = 4
+                for i in range(0, len(assistant_msg), chunk_size):
+                    text_chunk = assistant_msg[i:i + chunk_size]
+                    chunk_data = {
+                        "id": msg_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_name,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": text_chunk},
+                            "finish_reason": None
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode()
+                    await asyncio.sleep(0.02)
+            
+            # 结束标记
+            yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]}, ensure_ascii=False)}\n\n".encode()
+            yield b"data: [DONE]\n\n"
+    
+    return StreamingResponse(generate_sse(), media_type="text/event-stream")
+
+# ============ 正常流式处理 ============
+
 async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -> AsyncGenerator[bytes, None]:
     assistant_chunks = []
-    proxy = settings.proxy_url if (settings.proxy_url and "localhost" not in url and "127.0.0.1" not in url) else None
+    proxy = settings.proxy_url if settings.proxy_url else None
     async with httpx.AsyncClient(timeout=120.0, proxy=proxy) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 error_body = await response.aread()
                 yield f"data: {json.dumps({'error': error_body.decode()})}\n\n".encode()
                 return
-            try:
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        yield f"{line}\n\n".encode()
-                        if line == "data: [DONE]":
-                            continue
-                        try:
-                            data = json.loads(line[6:])
-                            delta = data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                assistant_chunks.append(content)
-                        except:
-                            pass
-            except Exception as stream_err:
-                print(f"[Stream] Connection closed: {stream_err}")
-            yield b"data: [DONE]\n\n"
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    yield f"{line}\n\n".encode()
+                    if line == "data: [DONE]":
+                        continue
+                    try:
+                        data = json.loads(line[6:])
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            assistant_chunks.append(content)
+                    except:
+                        pass
     assistant_msg = "".join(assistant_chunks)
     if user_msg and assistant_msg and not should_skip_storage(user_msg):
-        
         try:
             conv_id = await save_conversation_with_round(user_msg, assistant_msg)
             # 触发摘要检查
-            _safe_task(check_and_generate_summary())
+            asyncio.create_task(check_and_generate_summary())
             # 后台向量化
             if conv_id:
-                _safe_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+                asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
         except Exception as e:
             print(f"Storage error: {e}")
 
-async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str) -> JSONResponse:
-    """假流式：从后端收流式数据，拼成非流式响应返回"""
-    body["stream"] = True
-    assistant_chunks = []
-    reasoning_chunks = []
-    model_name = ""
-    msg_id = ""
-    proxy = settings.proxy_url if (settings.proxy_url and "localhost" not in url and "127.0.0.1" not in url) else None
-    try:
-        async with httpx.AsyncClient(timeout=180.0, proxy=proxy) as client:
-            async with client.stream("POST", url, headers=headers, json=body) as response:
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    return JSONResponse(status_code=response.status_code, content={"error": error_body.decode()})
-                try:
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: ") or line == "data: [DONE]":
-                            continue
-                        try:
-                            data = json.loads(line[6:])
-                            if not msg_id and data.get("id"):
-                                msg_id = data["id"]
-                                model_name = data.get("model", "")
-                            delta = data.get("choices", [{}])[0].get("delta", {})
-                            if delta.get("content"):
-                                assistant_chunks.append(delta["content"])
-                            if delta.get("reasoning_content"):
-                                reasoning_chunks.append(delta["reasoning_content"])
-                        except:
-                            pass
-                except Exception as e:
-                    print(f"[FakeStream] Read ended: {e}")
-    except Exception as e:
-        print(f"[FakeStream] Connection error: {e}")
-        return JSONResponse(status_code=502, content={"error": str(e)})
-
-    assistant_msg = "".join(assistant_chunks)
-    result = {
-        "id": msg_id or "chatcmpl-fake",
-        "object": "chat.completion",
-        "created": int(datetime.now().timestamp()),
-        "model": model_name,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": assistant_msg}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
-    if user_msg and assistant_msg and not should_skip_storage(user_msg):
-        try:
-            conv_id = await save_conversation_with_round(user_msg, assistant_msg)
-            _safe_task(check_and_generate_summary())
-            if conv_id:
-                _safe_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
-        except Exception as e:
-            print(f"[FakeStream] Storage error: {e}")
-    # 以标准SSE格式返回给Kelivo
-    async def fake_generate():
-        base = {"id": msg_id or "chatcmpl-fake", "object": "chat.completion.chunk", "created": int(datetime.now().timestamp()), "model": model_name}
-        reasoning_text = "".join(reasoning_chunks)
-        if reasoning_text:
-            for i in range(0, len(reasoning_text), 50):
-                chunk = dict(base)
-                chunk["choices"] = [{"index": 0, "delta": {"reasoning_content": reasoning_text[i:i+50]}, "finish_reason": None}]
-                yield f"data: {json.dumps(chunk)}\n\n".encode()
-        chunk = dict(base)
-        chunk["choices"] = [{"index": 0, "delta": {"role": "assistant", "content": assistant_msg}, "finish_reason": "stop"}]
-        yield f"data: {json.dumps(chunk)}\n\n".encode()
-        yield b"data: [DONE]\n\n"
-    return StreamingResponse(fake_generate(), media_type="text/event-stream")
+# ============ 非流式处理 ============
 
 async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str) -> JSONResponse:
-    proxy = settings.proxy_url if (settings.proxy_url and "localhost" not in url and "127.0.0.1" not in url) else None
+    proxy = settings.proxy_url if settings.proxy_url else None
     async with httpx.AsyncClient(timeout=120.0, proxy=proxy) as client:
         response = await client.post(url, headers=headers, json=body)
         if response.status_code != 200:
@@ -404,10 +478,10 @@ async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str)
             try:
                 conv_id = await save_conversation_with_round(user_msg, assistant_msg)
                 # 触发摘要检查
-                _safe_task(check_and_generate_summary())
+                asyncio.create_task(check_and_generate_summary())
                 # 后台向量化
                 if conv_id:
-                    _safe_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
+                    asyncio.create_task(store_conversation_embedding(conv_id, user_msg, assistant_msg))
             except Exception as e:
                 print(f"Storage error: {e}")
         return JSONResponse(content=result)
