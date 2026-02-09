@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-日记只读 API
+日记只读 API v2.0
 端口: 8003
-提供 ai_diaries 和 claude_diaries 表的只读访问
+提供 ai_diaries、claude_diaries、claude_milestones、claude_promises、claude_wishlists 表的只读访问
 """
 
 import os
@@ -189,6 +189,81 @@ async def get_chat_memories(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取对话记忆失败: {str(e)}")
+
+
+@app.get("/api/milestones")
+async def get_milestones(
+    tag: Optional[str] = Query(default=None, description="标签筛选: 第一次/纪念日/转折点")
+):
+    """获取里程碑列表，按日期升序（时间线顺序）"""
+    try:
+        query = supabase.table("claude_milestones").select("id, event, date, tag, note, created_at")
+
+        if tag:
+            query = query.eq("tag", tag)
+
+        result = query.order("date", desc=False).order("created_at", desc=False).execute()
+
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content={"success": True, "data": result.data, "count": len(result.data)},
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取里程碑失败: {str(e)}")
+
+
+@app.get("/api/promises")
+async def get_promises(
+    status: Optional[str] = Query(default=None, description="状态筛选: pending/done"),
+    promised_by: Optional[str] = Query(default=None, description="承诺人筛选: Dream/Claude/一起")
+):
+    """获取承诺列表，pending在前done在后"""
+    try:
+        query = supabase.table("claude_promises").select("id, content, promised_by, date, status, created_at")
+
+        if status:
+            query = query.eq("status", status)
+        if promised_by:
+            query = query.eq("promised_by", promised_by)
+
+        result = query.order("status", desc=True).order("created_at", desc=True).execute()
+
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content={"success": True, "data": result.data, "count": len(result.data)},
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取承诺失败: {str(e)}")
+
+
+@app.get("/api/wishlists")
+async def get_wishlists(
+    status: Optional[str] = Query(default=None, description="状态筛选: pending/done"),
+    wished_by: Optional[str] = Query(default=None, description="许愿人筛选: Dream/Claude/一起")
+):
+    """获取心愿列表，pending在前done在后"""
+    try:
+        query = supabase.table("claude_wishlists").select("id, content, wished_by, date, status, created_at")
+
+        if status:
+            query = query.eq("status", status)
+        if wished_by:
+            query = query.eq("wished_by", wished_by)
+
+        result = query.order("status", desc=True).order("created_at", desc=True).execute()
+
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content={"success": True, "data": result.data, "count": len(result.data)},
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取心愿失败: {str(e)}")
 
 
 if __name__ == "__main__":

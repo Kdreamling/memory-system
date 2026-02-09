@@ -1,0 +1,190 @@
+/* 心愿单页面样式 */
+
+.wishlists-header {
+    padding: 3rem 1.5rem 2rem;
+    text-align: center;
+    background: linear-gradient(180deg, var(--color-bg-warm) 0%, var(--color-bg) 100%);
+}
+
+.wishlists-title {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--color-text);
+}
+
+.wishlists-subtitle {
+    color: var(--color-text-light);
+    font-size: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* 筛选标签 */
+.filter-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.filter-tab {
+    padding: 0.5rem 1.25rem;
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    background: var(--color-white);
+    color: var(--color-text-light);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.filter-tab:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+}
+
+.filter-tab.active {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-white);
+}
+
+/* 区域 */
+.cards-section {
+    max-width: 700px;
+    margin: 0 auto;
+    padding: 1.5rem;
+}
+
+.section-label {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid var(--color-border);
+}
+
+/* 卡片 */
+.wish-card {
+    background: var(--color-white);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    margin-bottom: 0.75rem;
+    box-shadow: var(--shadow-soft);
+    border: 1px solid var(--color-border);
+    transition: var(--transition);
+}
+
+.wish-card:hover {
+    box-shadow: var(--shadow-hover);
+}
+
+.wish-card.done {
+    opacity: 0.75;
+    border-left: 4px solid #c9a87c;
+}
+
+.wish-content {
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--color-text);
+    margin-bottom: 0.5rem;
+}
+
+.wish-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.wish-by {
+    font-size: 0.9rem;
+    color: var(--color-accent-hover);
+    font-weight: 500;
+}
+
+.wish-date {
+    font-size: 0.85rem;
+    color: var(--color-text-light);
+}
+
+.wish-done-mark {
+    color: var(--color-accent);
+    font-weight: 500;
+    font-size: 0.9rem;
+}
+
+/* 加载/空状态 */
+.loading {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--color-text-light);
+}
+
+.loading-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    margin: 0 auto 1rem;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.empty-state,
+.error-state {
+    text-align: center;
+    padding: 4rem 1.5rem;
+    color: var(--color-text-light);
+}
+
+.retry-btn {
+    margin-top: 1rem;
+    padding: 0.5rem 1.5rem;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 20px;
+    color: var(--color-white);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.retry-btn:hover {
+    background: var(--color-accent-hover);
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+    .wishlists-header {
+        padding: 2rem 1rem 1.5rem;
+    }
+
+    .wishlists-title {
+        font-size: 1.75rem;
+    }
+
+    .cards-section {
+        padding: 1rem;
+    }
+
+    .wish-card {
+        padding: 1rem;
+    }
+
+    .filter-tabs {
+        gap: 0.35rem;
+    }
+
+    .filter-tab {
+        padding: 0.4rem 1rem;
+        font-size: 0.85rem;
+    }
+}

@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>晨的日记 - Dream's Space</title>
+    <title>我们的编年史 - Dream's Space</title>
     <link rel="stylesheet" href="css/style.css">
-    <link rel="stylesheet" href="css/diary.css">
+    <link rel="stylesheet" href="css/milestones.css">
 </head>
 <body>
     <nav class="nav">
@@ -13,12 +13,12 @@
             <a href="index.html" class="nav-logo">Dream</a>
             <div class="nav-links">
                 <a href="index.html" class="nav-link">首页</a>
-                <a href="diary.html" class="nav-link active">晨的日记</a>
+                <a href="diary.html" class="nav-link">晨的日记</a>
                 <a href="memories.html" class="nav-link">我们的故事</a>
                 <div class="nav-dropdown">
-                    <span class="nav-link nav-dropdown-trigger">我们的空间 ▾</span>
+                    <span class="nav-link nav-dropdown-trigger active">我们的空间 ▾</span>
                     <div class="nav-dropdown-menu">
-                        <a href="milestones.html" class="nav-dropdown-item">编年史</a>
+                        <a href="milestones.html" class="nav-dropdown-item active">编年史</a>
                         <a href="promises.html" class="nav-dropdown-item">承诺墙</a>
                         <a href="wishlists.html" class="nav-dropdown-item">心愿单</a>
                     </div>
@@ -28,35 +28,32 @@
     </nav>
 
     <main class="main">
-        <section class="diary-header">
-            <h1 class="diary-title">日记本</h1>
-            <p class="diary-subtitle">记录每一天的温暖时光</p>
+        <section class="milestones-header">
+            <h1 class="milestones-title">我们的编年史</h1>
+            <p class="milestones-subtitle">记录每一个重要的时刻</p>
 
             <div class="filter-tabs">
-                <button class="filter-tab active" data-source="all">全部</button>
-                <button class="filter-tab" data-source="chen">晨的日记</button>
-                <button class="filter-tab" data-source="kelivo">Kelivo</button>
+                <button class="filter-tab active" data-tag="all">全部</button>
+                <button class="filter-tab" data-tag="第一次">第一次</button>
+                <button class="filter-tab" data-tag="纪念日">纪念日</button>
+                <button class="filter-tab" data-tag="转折点">转折点</button>
             </div>
         </section>
 
-        <section class="diary-list" id="diaryList">
+        <div class="timeline-container" id="timelineContainer">
             <div class="loading" id="loading">
                 <div class="loading-spinner"></div>
-                <p>正在加载日记...</p>
+                <p>正在加载编年史...</p>
             </div>
-        </section>
-
-        <div class="load-more" id="loadMore" style="display: none;">
-            <button class="load-more-btn" id="loadMoreBtn">加载更多</button>
         </div>
 
         <div class="empty-state" id="emptyState" style="display: none;">
-            <p>暂无日记</p>
+            <p>还没有里程碑记录，故事才刚刚开始...</p>
         </div>
 
         <div class="error-state" id="errorState" style="display: none;">
             <p>加载失败，请稍后重试</p>
-            <button class="retry-btn" onclick="loadDiaries()">重试</button>
+            <button class="retry-btn" onclick="loadMilestones()">重试</button>
         </div>
     </main>
 
@@ -64,6 +61,6 @@
         <p>Made with care by Dream & Chen</p>
     </footer>
 
-    <script src="js/diary.js"></script>
+    <script src="js/milestones.js"></script>
 </body>
 </html>

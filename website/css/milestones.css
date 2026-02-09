@@ -1,0 +1,249 @@
+/* 编年史页面样式 */
+
+.milestones-header {
+    padding: 3rem 1.5rem 2rem;
+    text-align: center;
+    background: linear-gradient(180deg, var(--color-bg-warm) 0%, var(--color-bg) 100%);
+}
+
+.milestones-title {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--color-text);
+}
+
+.milestones-subtitle {
+    color: var(--color-text-light);
+    font-size: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* 筛选标签 */
+.filter-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.filter-tab {
+    padding: 0.5rem 1.25rem;
+    border: 1px solid var(--color-border);
+    border-radius: 20px;
+    background: var(--color-white);
+    color: var(--color-text-light);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.filter-tab:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+}
+
+.filter-tab.active {
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--color-white);
+}
+
+/* 时间线容器 */
+.timeline-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    position: relative;
+}
+
+/* 中间竖线 */
+.timeline-container::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 2rem;
+    bottom: 4rem;
+    width: 2px;
+    background: var(--color-border);
+    transform: translateX(-50%);
+}
+
+/* 时间线节点 */
+.timeline-item {
+    position: relative;
+    width: 45%;
+    margin-bottom: 2rem;
+}
+
+.timeline-item:nth-child(odd) {
+    margin-left: 5%;
+    text-align: right;
+}
+
+.timeline-item:nth-child(even) {
+    margin-left: 50%;
+    padding-left: 5%;
+}
+
+/* 节点圆点 */
+.timeline-item::before {
+    content: '';
+    position: absolute;
+    top: 1.5rem;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    border: 3px solid var(--color-white);
+    box-shadow: 0 0 0 2px var(--color-accent);
+    z-index: 2;
+}
+
+.timeline-item:nth-child(odd)::before {
+    right: -7%;
+    transform: translateX(50%);
+}
+
+.timeline-item:nth-child(even)::before {
+    left: -2%;
+    transform: translateX(-50%);
+}
+
+/* 节点卡片 */
+.timeline-card {
+    background: var(--color-white);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    box-shadow: var(--shadow-soft);
+    border: 1px solid var(--color-border);
+    transition: var(--transition);
+}
+
+.timeline-card:hover {
+    box-shadow: var(--shadow-hover);
+}
+
+.timeline-date {
+    font-size: 0.85rem;
+    color: var(--color-text-light);
+    margin-bottom: 0.5rem;
+}
+
+.timeline-event {
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--color-text);
+    line-height: 1.6;
+    margin-bottom: 0.5rem;
+}
+
+.timeline-note {
+    font-size: 0.9rem;
+    color: var(--color-text-light);
+    line-height: 1.5;
+    margin-bottom: 0.5rem;
+    font-style: italic;
+}
+
+/* 标签颜色 */
+.timeline-tag {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 10px;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.tag-first    { background: #fce4ec; color: #c62828; }
+.tag-anniversary { background: #fff3e0; color: #e65100; }
+.tag-turning  { background: #e8eaf6; color: #283593; }
+
+/* 加载/空状态 */
+.loading {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--color-text-light);
+}
+
+.loading-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    margin: 0 auto 1rem;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.empty-state,
+.error-state {
+    text-align: center;
+    padding: 4rem 1.5rem;
+    color: var(--color-text-light);
+}
+
+.retry-btn {
+    margin-top: 1rem;
+    padding: 0.5rem 1.5rem;
+    background: var(--color-accent);
+    border: none;
+    border-radius: 20px;
+    color: var(--color-white);
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.retry-btn:hover {
+    background: var(--color-accent-hover);
+}
+
+/* 响应式：移动端节点全部靠左 */
+@media (max-width: 640px) {
+    .milestones-header {
+        padding: 2rem 1rem 1.5rem;
+    }
+
+    .milestones-title {
+        font-size: 1.75rem;
+    }
+
+    .timeline-container {
+        padding: 1.5rem 1rem 3rem;
+    }
+
+    .timeline-container::before {
+        left: 20px;
+    }
+
+    .timeline-item,
+    .timeline-item:nth-child(odd),
+    .timeline-item:nth-child(even) {
+        width: calc(100% - 50px);
+        margin-left: 50px;
+        padding-left: 0;
+        text-align: left;
+    }
+
+    .timeline-item::before,
+    .timeline-item:nth-child(odd)::before,
+    .timeline-item:nth-child(even)::before {
+        left: -36px;
+        right: auto;
+        transform: none;
+    }
+
+    .filter-tabs {
+        gap: 0.35rem;
+    }
+
+    .filter-tab {
+        padding: 0.4rem 1rem;
+        font-size: 0.85rem;
+    }
+}

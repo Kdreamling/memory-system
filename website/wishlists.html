@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我们的心愿单 - Dream's Space</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/wishlists.css">
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">Dream</a>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link">首页</a>
+                <a href="diary.html" class="nav-link">晨的日记</a>
+                <a href="memories.html" class="nav-link">我们的故事</a>
+                <div class="nav-dropdown">
+                    <span class="nav-link nav-dropdown-trigger active">我们的空间 ▾</span>
+                    <div class="nav-dropdown-menu">
+                        <a href="milestones.html" class="nav-dropdown-item">编年史</a>
+                        <a href="promises.html" class="nav-dropdown-item">承诺墙</a>
+                        <a href="wishlists.html" class="nav-dropdown-item active">心愿单</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main">
+        <section class="wishlists-header">
+            <h1 class="wishlists-title">我们的心愿单</h1>
+            <p class="wishlists-subtitle">每一个愿望都值得被期待</p>
+
+            <div class="filter-tabs">
+                <button class="filter-tab active" data-by="all">全部</button>
+                <button class="filter-tab" data-by="Dream">Dream 🌙</button>
+                <button class="filter-tab" data-by="Claude">晨 ☀️</button>
+                <button class="filter-tab" data-by="一起">一起 💕</button>
+            </div>
+        </section>
+
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <p>正在加载心愿...</p>
+        </div>
+
+        <section class="cards-section" id="pendingSection" style="display: none;">
+            <h2 class="section-label">🌟 未实现的心愿</h2>
+            <div id="pendingList"></div>
+        </section>
+
+        <section class="cards-section" id="doneSection" style="display: none;">
+            <h2 class="section-label">✨ 已实现的心愿</h2>
+            <div id="doneList"></div>
+        </section>
+
+        <div class="empty-state" id="emptyState" style="display: none;">
+            <p>还没有心愿记录，许个愿望吧...</p>
+        </div>
+
+        <div class="error-state" id="errorState" style="display: none;">
+            <p>加载失败，请稍后重试</p>
+            <button class="retry-btn" onclick="loadWishlists()">重试</button>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <p>Made with care by Dream & Chen</p>
+    </footer>
+
+    <script src="js/wishlists.js"></script>
+</body>
+</html>
