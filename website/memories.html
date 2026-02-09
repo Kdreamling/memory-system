@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我们的故事 - Dream's Space</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/memories.css">
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="index.html" class="nav-logo">Dream</a>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link">首页</a>
+                <a href="diary.html" class="nav-link">晨的日记</a>
+                <a href="memories.html" class="nav-link active">我们的故事</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main">
+        <section class="memories-header">
+            <h1 class="memories-title">我们的故事</h1>
+            <p class="memories-subtitle">每一次对话，都是值得珍藏的记忆</p>
+
+            <div class="search-bar">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="M21 21l-4.35-4.35"/>
+                </svg>
+                <input type="text" class="search-input" id="searchInput" placeholder="搜索记忆...">
+            </div>
+
+            <div class="filter-tabs">
+                <button class="filter-tab active" data-category="all">全部</button>
+                <button class="filter-tab" data-category="日常">日常</button>
+                <button class="filter-tab" data-category="技术">技术</button>
+                <button class="filter-tab" data-category="剧本">剧本</button>
+                <button class="filter-tab" data-category="亲密">亲密</button>
+                <button class="filter-tab" data-category="情感">情感</button>
+                <button class="filter-tab" data-category="工作">工作</button>
+            </div>
+        </section>
+
+        <section class="memories-list" id="memoriesList">
+            <div class="loading" id="loading">
+                <div class="loading-spinner"></div>
+                <p>正在加载记忆...</p>
+            </div>
+        </section>
+
+        <div class="load-more" id="loadMore" style="display: none;">
+            <button class="load-more-btn" id="loadMoreBtn">加载更多</button>
+        </div>
+
+        <div class="empty-state" id="emptyState" style="display: none;">
+            <p>暂无记忆</p>
+        </div>
+
+        <div class="error-state" id="errorState" style="display: none;">
+            <p>加载失败，请稍后重试</p>
+            <button class="retry-btn" onclick="loadMemories()">重试</button>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <p>Made with care by Dream & Chen</p>
+    </footer>
+
+    <script src="js/memories.js"></script>
+</body>
+</html>
