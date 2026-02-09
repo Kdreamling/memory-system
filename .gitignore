@@ -5,5 +5,6 @@ __pycache__/
 chroma_db/
 node_modules/
 *.bak
+*.bak.*
 dist/
 .DS_Store
