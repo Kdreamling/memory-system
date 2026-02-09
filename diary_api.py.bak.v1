@@ -160,37 +160,6 @@ async def get_diary(diary_id: int, source: str = Query(..., description="来源:
         raise HTTPException(status_code=500, detail=f"获取日记失败: {str(e)}")
 
 
-@app.get("/api/chat_memories")
-async def get_chat_memories(
-    limit: int = Query(default=50, ge=1, le=200, description="返回条数"),
-    offset: int = Query(default=0, ge=0, description="偏移量"),
-    category: Optional[str] = Query(default=None, description="分类筛选: 日常/技术/剧本/亲密/情感/工作"),
-    keyword: Optional[str] = Query(default=None, description="按标题或摘要搜索")
-):
-    """
-    获取对话记忆列表，按日期倒序排列
-    """
-    try:
-        query = supabase.table("claude_chat_memories").select("*")
-
-        if category:
-            query = query.eq("category", category)
-
-        if keyword:
-            query = query.or_(f"chat_title.ilike.%{keyword}%,summary.ilike.%{keyword}%")
-
-        result = query.order("chat_date", desc=True).limit(limit).offset(offset).execute()
-
-        return {
-            "success": True,
-            "data": result.data,
-            "count": len(result.data)
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取对话记忆失败: {str(e)}")
-
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8003)
