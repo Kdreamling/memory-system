@@ -1,69 +1,38 @@
 """
-MCP 工具路由 - Streamable HTTP MCP 协议
-修复：添加 Session 管理 + SSE 端点，解决 Kelivo 掉线问题
+MCP 工具路由 - 支持MemU语义搜索 + 日记 + 表情包
+兼容 JSON-RPC 2.0 协议
 """
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from datetime import datetime
+from fastapi.responses import JSONResponse
+from datetime import datetime, date
 from typing import Any, Dict, List
-import uuid
-import asyncio
 import sys
+import json
 
 sys.path.insert(0, '/home/dream/memory-system/gateway')
 from services.storage import get_recent_conversations, search_conversations, get_recent_summaries
 from services.memu_client import retrieve, is_available
 from services.embedding_service import search_similar
 from services.yuque_service import sync_diary_to_yuque
-from datetime import date
-
-
-# ============ 表情包索引 ============
-
-STICKER_BASE_URL = "https://kdreamling.work/stickers"
-
-STICKER_CATALOG = [
-    {"file": "miss_what_now.jpg", "tags": ["无语", "嫌弃", "傲娇", "又怎么了"], "desc": "又怎么了？我的大小姐"},
-    {"file": "cat_cry.jpg", "tags": ["难过", "委屈", "哭", "呜呜", "心疼"], "desc": "猫猫哭哭"},
-    {"file": "cat_point.jpg", "tags": ["指出", "说你呢", "就是你", "嘲讽", "diss"], "desc": "猫猫指指点点"},
-    {"file": "cat_chaos.jpg", "tags": ["搞事", "捣乱", "坏笑", "恶作剧", "嘿嘿"], "desc": "给社会添乱"},
-]
 
 router = APIRouter()
 
-# ============ Session 管理 ============
+# ============ 表情包目录（从JSON文件加载） ============
 
-# 存储活跃的 session（内存中即可，重启后 Kelivo 会重新 initialize）
-active_sessions: Dict[str, dict] = {}
+STICKER_BASE_URL = "https://kdreamling.work/stickers"
+STICKER_JSON_PATH = "/home/dream/memory-system/website/stickers/stickers.json"
 
+def load_sticker_catalog() -> list:
+    """从JSON文件加载表情包目录"""
+    try:
+        with open(STICKER_JSON_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[MCP] 加载表情包目录失败: {e}")
+        return []
 
-def create_session() -> str:
-    """创建新 session"""
-    session_id = str(uuid.uuid4())
-    active_sessions[session_id] = {
-        "created_at": datetime.now().isoformat(),
-        "last_active": datetime.now().isoformat()
-    }
-    print(f"[MCP] Session created: {session_id[:8]}...")
-    return session_id
-
-
-def validate_session(request: Request) -> bool:
-    """验证请求中的 session ID"""
-    session_id = request.headers.get("mcp-session-id", "")
-    if session_id and session_id in active_sessions:
-        active_sessions[session_id]["last_active"] = datetime.now().isoformat()
-        return True
-    return False
-
-
-def get_session_id(request: Request) -> str:
-    """从请求头获取 session ID"""
-    return request.headers.get("mcp-session-id", "")
-
-
-# ============ MCP 工具定义 ============
+# ============ MCP工具定义 ============
 
 MCP_TOOLS = [
     {
@@ -117,154 +86,73 @@ MCP_TOOLS = [
             },
             "required": ["content"]
         }
+    },
+    {
+        "name": "send_sticker",
+        "description": "发送一个猫猫表情包。当想表达情绪、逗Dream开心、撒娇、吐槽时使用。根据当前对话氛围选择合适的表情。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mood": {
+                    "type": "string",
+                    "description": "想表达的情绪或氛围，如'难过'、'无语'、'搞事'、'委屈'、'嫌弃'、'调皮'"
+                }
+            },
+            "required": ["mood"]
+        }
     }
 ]
 
-
-# ============ JSON-RPC 请求处理（POST /mcp） ============
+# ============ JSON-RPC 处理 ============
 
 @router.post("/mcp")
-async def handle_mcp_post(request: Request):
-    """处理 MCP JSON-RPC 请求"""
-
+async def handle_mcp(request: Request):
+    """处理MCP JSON-RPC请求"""
+    
     try:
         body = await request.json()
-    except Exception:
+    except:
         return JSONResponse(content={
             "jsonrpc": "2.0",
             "id": None,
             "error": {"code": -32700, "message": "Parse error"}
         })
-
+    
     method = body.get("method", "")
     params = body.get("params", {})
     request_id = body.get("id")
-
+    
     print(f"[MCP] Method: {method}")
-
-    # initialize 不需要验证 session（因为还没有 session）
-    if method == "initialize":
-        result = await handle_initialize(params)
-        session_id = create_session()
-        response = JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": result
-        })
-        response.headers["Mcp-Session-Id"] = session_id
-        return response
-
-    # notifications/initialized 不需要严格验证，直接通过
-    if method == "notifications/initialized":
-        result = await handle_initialized(params)
-        response = JSONResponse(content={
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": result
-        })
-        # 保持 session header
-        sid = get_session_id(request)
-        if sid:
-            response.headers["Mcp-Session-Id"] = sid
-        return response
-
-    # 其他方法：验证 session（宽容模式：session 无效也放行，但会 log 警告）
-    sid = get_session_id(request)
-    if sid and sid not in active_sessions:
-        print(f"[MCP] Warning: unknown session {sid[:8]}..., allowing anyway")
-        # 自动注册这个 session（兼容 Kelivo 可能的行为）
-        active_sessions[sid] = {
-            "created_at": datetime.now().isoformat(),
-            "last_active": datetime.now().isoformat()
-        }
-
+    
     # 路由到对应处理器
     handlers = {
+        "initialize": handle_initialize,
+        "notifications/initialized": handle_initialized,
         "tools/list": handle_tools_list,
         "tools/call": handle_tools_call,
-        "ping": handle_ping,
     }
-
+    
     handler = handlers.get(method)
     if handler:
         result = await handler(params)
-        response = JSONResponse(content={
+        return JSONResponse(content={
             "jsonrpc": "2.0",
             "id": request_id,
             "result": result
         })
-        if sid:
-            response.headers["Mcp-Session-Id"] = sid
-        return response
     else:
-        response = JSONResponse(content={
+        return JSONResponse(content={
             "jsonrpc": "2.0",
             "id": request_id,
             "error": {"code": -32601, "message": f"Method not found: {method}"}
         })
-        if sid:
-            response.headers["Mcp-Session-Id"] = sid
-        return response
 
-
-# ============ SSE 端点（GET /mcp）============
-# Kelivo 的 Streamable HTTP 传输会用 GET 请求建立 SSE 连接
-# 即使我们没有主动推送的消息，也需要保持这个连接存活
-
-@router.get("/mcp")
-async def handle_mcp_sse(request: Request):
-    """SSE 端点 - 保持连接存活"""
-
-    sid = get_session_id(request)
-    if sid:
-        print(f"[MCP] SSE connection opened for session {sid[:8]}...")
-
-    async def event_stream():
-        """生成 SSE 事件流，定期发送心跳保持连接"""
-        try:
-            while True:
-                # 每 25 秒发送一个注释行作为心跳
-                # SSE 规范中，以冒号开头的行是注释，客户端会忽略但连接保持活跃
-                yield ": heartbeat\n\n"
-                await asyncio.sleep(15)
-        except asyncio.CancelledError:
-            print(f"[MCP] SSE connection closed for session {sid[:8] if sid else 'unknown'}...")
-
-    response = StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # 防止 Nginx 缓冲 SSE
-        }
-    )
-    if sid:
-        response.headers["Mcp-Session-Id"] = sid
-    return response
-
-
-# ============ DELETE /mcp（关闭 session）============
-
-@router.delete("/mcp")
-async def handle_mcp_delete(request: Request):
-    """关闭 MCP session"""
-    sid = get_session_id(request)
-    if sid and sid in active_sessions:
-        del active_sessions[sid]
-        print(f"[MCP] Session closed: {sid[:8]}...")
-    return JSONResponse(content={"status": "ok"}, status_code=200)
-
-
-# ============ JSON-RPC 处理器 ============
 
 async def handle_initialize(params: dict) -> dict:
     """处理初始化握手"""
     return {
         "protocolVersion": "2024-11-05",
-        "capabilities": {
-            "tools": {}
-        },
+        "capabilities": {"tools": {}},
         "serverInfo": {
             "name": "memory-gateway",
             "version": "2.1.0"
@@ -282,26 +170,21 @@ async def handle_tools_list(params: dict) -> dict:
     return {"tools": MCP_TOOLS}
 
 
-async def handle_ping(params: dict) -> dict:
-    """处理 ping 请求"""
-    return {}
-
-
 async def handle_tools_call(params: dict) -> dict:
     """执行工具调用"""
     tool_name = params.get("name", "")
     arguments = params.get("arguments", {})
-
+    
     print(f"[MCP] Tool call: {tool_name} with {arguments}")
-
+    
     if tool_name == "search_memory":
         return await execute_search_memory(arguments)
     elif tool_name == "init_context":
         return await execute_init_context(arguments)
-    elif tool_name == "send_sticker":
-        return await execute_send_sticker(arguments)
     elif tool_name == "save_diary":
         return await execute_save_diary(arguments)
+    elif tool_name == "send_sticker":
+        return execute_send_sticker(arguments)
     else:
         return {
             "content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}],
@@ -315,12 +198,12 @@ async def execute_search_memory(args: dict) -> dict:
     """执行搜索记忆 - 优先ChromaDB语义搜索"""
     query = args.get("query", "")
     limit = args.get("limit", 5)
-
+    
     if not query:
         recent = await get_recent_conversations("dream", limit)
         return format_conversations_result(recent, "最近的对话")
-
-    # 优先使用 ChromaDB 语义搜索
+    
+    # 优先使用ChromaDB语义搜索
     print(f"[MCP] Using ChromaDB semantic search for: {query}")
     try:
         results = await search_similar(query, "dream", limit)
@@ -328,18 +211,15 @@ async def execute_search_memory(args: dict) -> dict:
             return format_chroma_result(results, query)
     except Exception as e:
         print(f"[MCP] ChromaDB search error: {e}")
-
-    # Fallback: MemU（超时设短一点，不要拖太久）
-    try:
-        if await is_available():
-            print(f"[MCP] Fallback to MemU for: {query}")
-            memories = await retrieve("dream", query, limit)
-            if memories:
-                return format_memu_result(memories, query)
-    except Exception as e:
-        print(f"[MCP] MemU fallback error: {e}")
-
-    # 最终 Fallback: 关键词搜索
+    
+    # Fallback: 尝试MemU
+    if await is_available():
+        print(f"[MCP] Fallback to MemU for: {query}")
+        memories = await retrieve("dream", query, limit)
+        if memories:
+            return format_memu_result(memories, query)
+    
+    # 最终Fallback: 关键词搜索
     print(f"[MCP] Fallback to keyword search for: {query}")
     results = await search_conversations(query, "dream", limit)
     return format_conversations_result(results, f"关于'{query}'的记忆")
@@ -348,9 +228,9 @@ async def execute_search_memory(args: dict) -> dict:
 async def execute_init_context(args: dict) -> dict:
     """执行冷启动上下文加载 - 返回摘要+最近对话"""
     limit = args.get("limit", 4)
-
+    
     lines = []
-
+    
     # 1. 获取最近的摘要（前文回顾）
     summaries = await get_recent_summaries("dream", 3)
     if summaries:
@@ -362,10 +242,10 @@ async def execute_init_context(args: dict) -> dict:
         lines.append("")
         lines.append("---")
         lines.append("")
-
+    
     # 2. 获取最近4轮原文
     recent = await get_recent_conversations("dream", limit)
-
+    
     if recent:
         lines.append("【最近对话】以下是最近的对话原文：")
         lines.append("")
@@ -375,7 +255,7 @@ async def execute_init_context(args: dict) -> dict:
             lines.append(f"Dream: {conv['user_msg']}")
             lines.append(f"AI: {conv['assistant_msg'][:200]}...")
             lines.append("")
-
+    
     if not lines:
         return {
             "content": [{
@@ -383,7 +263,7 @@ async def execute_init_context(args: dict) -> dict:
                 "text": "这是一个全新的对话，没有之前的对话记录。"
             }]
         }
-
+    
     return {
         "content": [{
             "type": "text",
@@ -391,150 +271,6 @@ async def execute_init_context(args: dict) -> dict:
         }]
     }
 
-
-
-
-async def execute_send_sticker(args: dict) -> dict:
-    """根据情绪选择并发送表情包"""
-    mood = args.get("mood", "").lower()
-    
-    if not mood:
-        return {
-            "content": [{"type": "text", "text": "需要指定情绪或场景"}],
-            "isError": True
-        }
-    
-    # 匹配标签
-    best_match = None
-    best_score = 0
-    
-    for sticker in STICKER_CATALOG:
-        score = 0
-        for tag in sticker["tags"]:
-            if tag in mood or mood in tag:
-                score += 2
-            elif any(c in mood for c in tag):
-                score += 1
-        if score > best_score:
-            best_score = score
-            best_match = sticker
-    
-    # 没匹配到就随机选一个
-    if not best_match:
-        import random
-        best_match = random.choice(STICKER_CATALOG)
-    
-    url = f"{STICKER_BASE_URL}/{best_match['file']}"
-    
-    print(f"[MCP] Sticker: {best_match['desc']} for mood: {mood}")
-    
-    return {
-        "content": [{
-            "type": "text",
-            "text": f"![{best_match['desc']}]({url})"
-        }]
-    }
-
-# ============ 格式化辅助函数 ============
-
-def format_conversations_result(conversations: List[Dict], title: str) -> dict:
-    """格式化Supabase对话结果"""
-    if not conversations:
-        return {
-            "content": [{
-                "type": "text",
-                "text": f"没有找到{title}相关的记忆。"
-            }]
-        }
-
-    lines = [f"找到 {len(conversations)} 条{title}：", ""]
-
-    for i, conv in enumerate(conversations, 1):
-        time_str = format_time(conv.get("created_at", ""))
-        lines.append(f"【记忆 {i}】({time_str})")
-        lines.append(f"Dream: {conv['user_msg'][:150]}")
-        lines.append(f"AI: {conv['assistant_msg'][:150]}")
-        lines.append("")
-
-    return {
-        "content": [{
-            "type": "text",
-            "text": "\n".join(lines)
-        }]
-    }
-
-
-def format_chroma_result(results: list, query: str) -> dict:
-    """格式化ChromaDB语义搜索结果"""
-    if not results:
-        return {
-            "content": [{
-                "type": "text",
-                "text": f"没有找到与'{query}'相关的记忆。"
-            }]
-        }
-
-    lines = [f"找到 {len(results)} 条与'{query}'相关的记忆（语义搜索）：", ""]
-
-    for i, mem in enumerate(results, 1):
-        time_str = format_time(mem.get("created_at", ""))
-        distance = mem.get("distance")
-        similarity = f"相似度: {1-distance:.2f}" if distance else ""
-
-        lines.append(f"【记忆 {i}】({time_str}) {similarity}")
-        lines.append(f"Dream: {mem.get('user_msg', '')[:150]}")
-        lines.append(f"AI: {mem.get('assistant_msg', '')[:150]}")
-        lines.append("")
-
-    return {
-        "content": [{
-            "type": "text",
-            "text": "\n".join(lines)
-        }]
-    }
-
-
-def format_memu_result(memories: List[Dict], query: str) -> dict:
-    """格式化MemU语义搜索结果"""
-    if not memories:
-        return {
-            "content": [{
-                "type": "text",
-                "text": f"没有找到与'{query}'相关的记忆。"
-            }]
-        }
-
-    lines = [f"找到 {len(memories)} 条与'{query}'相关的记忆（语义搜索）：", ""]
-
-    for i, mem in enumerate(memories, 1):
-        content = mem.get("content", mem.get("text", str(mem)))
-        score = mem.get("score", mem.get("similarity", ""))
-
-        lines.append(f"【记忆 {i}】")
-        if score:
-            lines.append(f"相关度: {score:.2f}" if isinstance(score, float) else f"相关度: {score}")
-        lines.append(content[:300])
-        lines.append("")
-
-    return {
-        "content": [{
-            "type": "text",
-            "text": "\n".join(lines)
-        }]
-    }
-
-
-def format_time(time_str: str) -> str:
-    """格式化时间字符串 - 转换为北京时间"""
-    if not time_str:
-        return "未知时间"
-    try:
-        from datetime import timedelta
-        dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-        beijing_time = dt + timedelta(hours=8)
-        return beijing_time.strftime("%m月%d日 %H:%M")
-    except Exception:
-        return time_str[:16]
 
 async def execute_save_diary(args: dict) -> dict:
     """执行写日记 - 存数据库 + 同步语雀"""
@@ -555,11 +291,9 @@ async def execute_save_diary(args: dict) -> dict:
         from config import get_settings
         s = get_settings()
         supabase = create_client(s.supabase_url, s.supabase_key)
-
         existing = supabase.table("ai_diaries").select("id").eq(
             "diary_date", today.isoformat()
         ).execute()
-
         count = len(existing.data) if existing.data else 0
         if count >= 2:
             return {
@@ -606,3 +340,156 @@ async def execute_save_diary(args: dict) -> dict:
     return {
         "content": [{"type": "text", "text": " | ".join(parts)}]
     }
+
+
+def execute_send_sticker(args: dict) -> dict:
+    """根据情绪选择并发送表情包"""
+    mood = args.get("mood", "")
+    
+    if not mood:
+        return {
+            "content": [{"type": "text", "text": "请告诉我你想表达什么情绪～"}],
+            "isError": True
+        }
+    
+    # 每次调用时从JSON文件加载，这样改了JSON不用重启
+    catalog = load_sticker_catalog()
+    if not catalog:
+        return {
+            "content": [{"type": "text", "text": "表情包目录加载失败 😿"}],
+            "isError": True
+        }
+    
+    # 匹配：遍历目录，找tag包含mood关键词的表情
+    best_match = None
+    best_score = 0
+    
+    for sticker in catalog:
+        score = 0
+        for tag in sticker["tags"]:
+            if tag in mood or mood in tag:
+                score += 2
+            elif any(c in tag for c in mood):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_match = sticker
+    
+    # 没匹配到就随机选一个
+    if not best_match:
+        import random
+        best_match = random.choice(catalog)
+    
+    url = f"{STICKER_BASE_URL}/{best_match['file']}"
+    desc = best_match["desc"]
+    
+    print(f"[MCP] Sticker matched: {desc} (mood={mood}, score={best_score})")
+    
+    return {
+        "content": [{
+            "type": "text",
+            "text": f"![{desc}]({url})"
+        }]
+    }
+
+
+# ============ 格式化辅助函数 ============
+
+def format_conversations_result(conversations: List[Dict], title: str) -> dict:
+    """格式化Supabase对话结果"""
+    if not conversations:
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"没有找到{title}相关的记忆。"
+            }]
+        }
+    
+    lines = [f"找到 {len(conversations)} 条{title}：", ""]
+    
+    for i, conv in enumerate(conversations, 1):
+        time_str = format_time(conv.get("created_at", ""))
+        lines.append(f"【记忆 {i}】({time_str})")
+        lines.append(f"Dream: {conv['user_msg'][:150]}")
+        lines.append(f"AI: {conv['assistant_msg'][:150]}")
+        lines.append("")
+    
+    return {
+        "content": [{
+            "type": "text",
+            "text": "\n".join(lines)
+        }]
+    }
+
+
+def format_chroma_result(results: list, query: str) -> dict:
+    """格式化ChromaDB语义搜索结果"""
+    if not results:
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"没有找到与'{query}'相关的记忆。"
+            }]
+        }
+    
+    lines = [f"找到 {len(results)} 条与'{query}'相关的记忆（语义搜索）：", ""]
+    
+    for i, mem in enumerate(results, 1):
+        time_str = format_time(mem.get("created_at", ""))
+        distance = mem.get("distance")
+        similarity = f"相似度: {1-distance:.2f}" if distance else ""
+        
+        lines.append(f"【记忆 {i}】({time_str}) {similarity}")
+        lines.append(f"Dream: {mem.get('user_msg', '')[:150]}")
+        lines.append(f"AI: {mem.get('assistant_msg', '')[:150]}")
+        lines.append("")
+    
+    return {
+        "content": [{
+            "type": "text",
+            "text": "\n".join(lines)
+        }]
+    }
+
+
+def format_memu_result(memories: List[Dict], query: str) -> dict:
+    """格式化MemU语义搜索结果"""
+    if not memories:
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"没有找到与'{query}'相关的记忆。"
+            }]
+        }
+    
+    lines = [f"找到 {len(memories)} 条与'{query}'相关的记忆（语义搜索）：", ""]
+    
+    for i, mem in enumerate(memories, 1):
+        content = mem.get("content", mem.get("text", str(mem)))
+        score = mem.get("score", mem.get("similarity", ""))
+        
+        lines.append(f"【记忆 {i}】")
+        if score:
+            lines.append(f"相关度: {score:.2f}" if isinstance(score, float) else f"相关度: {score}")
+        lines.append(content[:300])
+        lines.append("")
+    
+    return {
+        "content": [{
+            "type": "text",
+            "text": "\n".join(lines)
+        }]
+    }
+
+
+def format_time(time_str: str) -> str:
+    """格式化时间字符串 - 转换为北京时间"""
+    if not time_str:
+        return "未知时间"
+    try:
+        from datetime import timedelta
+        dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+        beijing_time = dt + timedelta(hours=8)
+        return beijing_time.strftime("%m月%d日 %H:%M")
+    except:
+        return time_str[:16]
