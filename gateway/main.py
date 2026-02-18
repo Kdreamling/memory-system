@@ -20,7 +20,7 @@ from services.storage import save_conversation_with_round, update_weight
 from services.summary_service import check_and_generate_summary
 from services.embedding_service import store_conversation_embedding
 import re
-from services.background import sync_service
+# from services.background import sync_service
 from routers.mcp_tools import router as mcp_router
 
 settings = get_settings()
@@ -46,6 +46,22 @@ BACKENDS = {
         "model_name": "claude-sonnet-4-5-thinking"
     },
     # Gemini 系列
+    # Antigravity通道 - Gemini 2.5 系列
+    "gemini-2.5-pro-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "假流式/gemini-2.5-pro"
+    },
+    "gemini-2.5-pro-stream-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "流式抗截断/gemini-2.5-pro"
+    },
+    "gemini-2.5-flash-ag": {
+        "base_url": "http://localhost:7861/antigravity/v1",
+        "api_key": "Claudehusbandking",
+        "model_name": "gemini-2.5-flash"
+    },
     "gemini-3-pro-ag": {
         "base_url": "http://localhost:7861/antigravity/v1",
         "api_key": "Claudehusbandking",
@@ -234,12 +250,12 @@ async def lifespan(app: FastAPI):
     print("Starting Memory Gateway v2.1...")
     print(f"Supported models: {list(BACKENDS.keys())}")
     try:
-        await sync_service.start()
+        pass  # await sync_service.start()
     except Exception as e:
         print(f"Warning: Background sync service failed to start: {e}")
     yield
     try:
-        await sync_service.stop()
+        pass  # await sync_service.stop()
     except:
         pass
     print("Gateway shutdown complete")

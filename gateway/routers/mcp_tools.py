@@ -18,6 +18,18 @@ from services.embedding_service import search_similar
 from services.yuque_service import sync_diary_to_yuque
 from datetime import date
 
+
+# ============ 表情包索引 ============
+
+STICKER_BASE_URL = "https://kdreamling.work/stickers"
+
+STICKER_CATALOG = [
+    {"file": "miss_what_now.jpg", "tags": ["无语", "嫌弃", "傲娇", "又怎么了"], "desc": "又怎么了？我的大小姐"},
+    {"file": "cat_cry.jpg", "tags": ["难过", "委屈", "哭", "呜呜", "心疼"], "desc": "猫猫哭哭"},
+    {"file": "cat_point.jpg", "tags": ["指出", "说你呢", "就是你", "嘲讽", "diss"], "desc": "猫猫指指点点"},
+    {"file": "cat_chaos.jpg", "tags": ["搞事", "捣乱", "坏笑", "恶作剧", "嘿嘿"], "desc": "给社会添乱"},
+]
+
 router = APIRouter()
 
 # ============ Session 管理 ============
@@ -286,6 +298,8 @@ async def handle_tools_call(params: dict) -> dict:
         return await execute_search_memory(arguments)
     elif tool_name == "init_context":
         return await execute_init_context(arguments)
+    elif tool_name == "send_sticker":
+        return await execute_send_sticker(arguments)
     elif tool_name == "save_diary":
         return await execute_save_diary(arguments)
     else:
@@ -377,6 +391,49 @@ async def execute_init_context(args: dict) -> dict:
         }]
     }
 
+
+
+
+async def execute_send_sticker(args: dict) -> dict:
+    """根据情绪选择并发送表情包"""
+    mood = args.get("mood", "").lower()
+    
+    if not mood:
+        return {
+            "content": [{"type": "text", "text": "需要指定情绪或场景"}],
+            "isError": True
+        }
+    
+    # 匹配标签
+    best_match = None
+    best_score = 0
+    
+    for sticker in STICKER_CATALOG:
+        score = 0
+        for tag in sticker["tags"]:
+            if tag in mood or mood in tag:
+                score += 2
+            elif any(c in mood for c in tag):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_match = sticker
+    
+    # 没匹配到就随机选一个
+    if not best_match:
+        import random
+        best_match = random.choice(STICKER_CATALOG)
+    
+    url = f"{STICKER_BASE_URL}/{best_match['file']}"
+    
+    print(f"[MCP] Sticker: {best_match['desc']} for mood: {mood}")
+    
+    return {
+        "content": [{
+            "type": "text",
+            "text": f"![{best_match['desc']}]({url})"
+        }]
+    }
 
 # ============ 格式化辅助函数 ============
 
