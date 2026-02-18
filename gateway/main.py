@@ -1,7 +1,7 @@
 """
 Memory Gateway - 多后端代理网关
 支持 DeepSeek、OpenRouter（GPT-4o、Claude、Gemini等）统一转发
-v2.1 - 修复reasoning_content丢失、空回（不使用全局连接池）
+v2.2 - 场景检测 + 混合检索 + pgvector + 自动注入
 """
 
 from fastapi import FastAPI, Request, HTTPException
@@ -18,12 +18,19 @@ sys.path.insert(0, '/home/dream/memory-system/gateway')
 from config import get_settings
 from services.storage import save_conversation_with_round, update_weight
 from services.summary_service import check_and_generate_summary
-from services.embedding_service import store_conversation_embedding
+from services.pgvector_service import store_conversation_embedding
+from services.scene_detector import SceneDetector
+from services.synonym_service import SynonymService
+from services.auto_inject import AutoInject
 import re
-# from services.background import sync_service
-from routers.mcp_tools import router as mcp_router
+from routers.mcp_tools import router as mcp_router, set_synonym_service
 
 settings = get_settings()
+
+# ============ v2 全局服务实例 ============
+scene_detector = SceneDetector()
+synonym_service = SynonymService()
+auto_inject = AutoInject(synonym_service=synonym_service)
 
 # ============ 多后端配置 ============
 
@@ -124,7 +131,7 @@ BACKENDS = {
         "model_name": "openai/gpt-4o-2024-11-20",
         "extra_headers": {"HTTP-Referer": "https://memory-system.local", "X-Title": "Memory Gateway"}
     },
-    
+
     # Gemini 模型 (via OpenRouter)
     "gemini-3-pro": {
         "base_url": "https://openrouter.ai/api/v1",
@@ -144,7 +151,7 @@ BACKENDS = {
         "model_name": "google/gemini-3-flash-preview",
         "extra_headers": {"HTTP-Referer": "https://memory-system.local", "X-Title": "Memory Gateway"}
     },
-    
+
     # Claude 模型 (via OpenRouter)
     "claude-sonnet-4.5": {
         "base_url": "https://openrouter.ai/api/v1",
@@ -247,17 +254,18 @@ def get_timeout(model_name: str) -> float:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Starting Memory Gateway v2.1...")
+    print("Starting Memory Gateway v2.2 (hybrid search + scene detection)...")
     print(f"Supported models: {list(BACKENDS.keys())}")
+    # 初始化v2服务
     try:
-        pass  # await sync_service.start()
+        await synonym_service.load()
+        set_synonym_service(synonym_service)
+        print("[v2] Synonym service loaded")
     except Exception as e:
-        print(f"Warning: Background sync service failed to start: {e}")
+        print(f"[v2] Warning: Synonym service failed to load: {e}")
+    print("[v2] Scene detector ready")
+    print("[v2] Auto-inject ready")
     yield
-    try:
-        pass  # await sync_service.stop()
-    except:
-        pass
     print("Gateway shutdown complete")
 
 app = FastAPI(title="Memory Gateway", lifespan=lifespan)
@@ -265,7 +273,18 @@ app.include_router(mcp_router)
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "2.1", "timestamp": datetime.now().isoformat(), "supported_models": list(BACKENDS.keys())}
+    return {
+        "status": "healthy",
+        "version": "2.2",
+        "timestamp": datetime.now().isoformat(),
+        "supported_models": list(BACKENDS.keys()),
+        "v2_features": {
+            "scene_detector": True,
+            "hybrid_search": True,
+            "auto_inject": True,
+            "current_scene": scene_detector.get_current_scene()
+        }
+    }
 
 @app.get("/models")
 async def list_models():
@@ -277,19 +296,19 @@ async def proxy_chat_completions(request: Request):
         body = await request.json()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-    
+
     requested_model = body.get("model", "deepseek-chat")
     backend = get_backend_config(requested_model)
-    
+
     if not backend.get("api_key"):
         raise HTTPException(status_code=400, detail=f"API key not configured for model: {requested_model}")
-    
+
     body["model"] = backend["model_name"]
-    
+
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {backend['api_key']}"}
     if "extra_headers" in backend:
         headers.update(backend["extra_headers"])
-    
+
     messages = body.get("messages", [])
     user_msg = ""
     for msg in reversed(messages):
@@ -300,39 +319,59 @@ async def proxy_chat_completions(request: Request):
             elif isinstance(content, list):
                 user_msg = " ".join(part.get("text", "") for part in content if part.get("type") == "text")
             break
-    
+
+    # ===== v2: 场景检测 =====
+    current_scene = "daily"
+    try:
+        current_scene = scene_detector.detect(user_msg)
+        if scene_detector.has_scene_changed():
+            print(f"[v2] Scene changed to: {current_scene}")
+    except Exception as e:
+        print(f"[v2] Scene detection error: {e}")
+
+    # ===== v2: 自动注入记忆 =====
+    try:
+        messages = await auto_inject.process(
+            user_msg=user_msg,
+            scene_type=current_scene,
+            messages=messages
+        )
+        body["messages"] = messages
+    except Exception as e:
+        print(f"[v2] Auto-inject error: {e}")
+
     is_stream = body.get("stream", False)
     target_url = f"{backend['base_url']}/chat/completions"
-    
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {requested_model} -> {backend['model_name']} | stream={is_stream}")
-    
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {requested_model} -> {backend['model_name']} | stream={is_stream} | scene={current_scene}")
+
     # 假流式模型走非流式请求再包装成SSE
     if "假流式" in requested_model:
-        return await fake_stream_to_normal(target_url, headers, body, user_msg)
+        return await fake_stream_to_normal(target_url, headers, body, user_msg, current_scene)
     elif is_stream:
-        return StreamingResponse(stream_and_store(target_url, headers, body, user_msg), media_type="text/event-stream")
+        return StreamingResponse(stream_and_store(target_url, headers, body, user_msg, current_scene), media_type="text/event-stream")
     else:
-        return await non_stream_request(target_url, headers, body, user_msg)
+        return await non_stream_request(target_url, headers, body, user_msg, current_scene)
 
 # ============ 假流式处理 ============
 
-async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str):
+async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily"):
     """
     假流式：
     1. 去掉模型名前缀，以非流式方式请求
     2. 解析 content + reasoning_content + tool_calls
     3. 包装成标准SSE流返回给Kelivo（先发思考再发回答）
-    4. 存储到数据库
+    4. 存储到数据库（带scene_type）
     """
     body["stream"] = False
     if isinstance(body.get("model"), str):
         body["model"] = body["model"].replace("假流式/", "", 1).replace("流式抗截断/", "", 1)
-    
+
     print(f"[FakeStream] Requesting non-stream: {body['model']}")
-    
+
     proxy = get_proxy(url)
     timeout = get_timeout(body.get("model", ""))
-    
+
     try:
         async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
             response = await client.post(url, headers=headers, json=body)
@@ -350,7 +389,7 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
     except Exception as e:
         print(f"[FakeStream] Connection error: {e}")
         return JSONResponse(status_code=502, content={"error": {"message": str(e), "code": 502}})
-    
+
     # 解析响应
     choice = result.get("choices", [{}])[0] if result.get("choices") else {}
     message = choice.get("message", {})
@@ -360,7 +399,7 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
     model_name = result.get("model", "")
     msg_id = result.get("id", f"chatcmpl-fake-{int(datetime.now().timestamp())}")
     finish_reason = choice.get("finish_reason", "stop")
-    
+
     if tool_calls:
         print(f"[FakeStream] Got {len(tool_calls)} tool_calls: {[tc.get('function', {}).get('name', '?') for tc in tool_calls]}")
     if reasoning_content:
@@ -369,23 +408,23 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
         print(f"[FakeStream] Got content: {len(assistant_content)} chars")
     if not assistant_content and not reasoning_content and not tool_calls:
         print(f"[FakeStream] WARNING: Empty response! Full result: {json.dumps(result, ensure_ascii=False)[:500]}")
-    
-    # 存储到数据库（优先存content，content为空则存reasoning）
+
+    # 存储到数据库（v2: 带scene_type，使用pgvector）
     storage_text = assistant_content or reasoning_content
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, storage_text)
+            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type)
             asyncio.create_task(check_and_generate_summary())
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
-            print(f"[FakeStream] Saved to DB")
+            print(f"[FakeStream] Saved to DB (scene={scene_type})")
         except Exception as e:
             print(f"[FakeStream] Storage error: {e}")
-    
+
     # 包装成标准SSE流返回给Kelivo
     async def generate_sse():
         created = int(datetime.now().timestamp())
-        
+
         if tool_calls:
             # ===== 工具调用模式 =====
             # 先发送思考过程（如果有）
@@ -406,12 +445,12 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                     }
                     yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode()
                     await asyncio.sleep(0.02)
-            
+
             for tc_idx, tc in enumerate(tool_calls):
                 func = tc.get("function", {})
                 tc_id = tc.get("id", f"call_{tc_idx}")
                 arguments = func.get("arguments", "")
-                
+
                 first_delta = {
                     "tool_calls": [{
                         "index": tc_idx,
@@ -426,9 +465,9 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                 if tc_idx == 0:
                     first_delta["role"] = "assistant"
                     first_delta["content"] = None
-                
+
                 yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': first_delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n".encode()
-                
+
                 if arguments:
                     arg_delta = {
                         "tool_calls": [{
@@ -437,10 +476,10 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                         }]
                     }
                     yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': arg_delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n".encode()
-            
+
             yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}, ensure_ascii=False)}\n\n".encode()
             yield b"data: [DONE]\n\n"
-        
+
         else:
             # ===== 文本模式（含思考过程） =====
             # 第一个chunk带role
@@ -456,7 +495,7 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                 }]
             }
             yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n".encode()
-            
+
             # 先发送 reasoning_content（思考过程）
             if reasoning_content:
                 chunk_size = 4
@@ -475,7 +514,7 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                     }
                     yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode()
                     await asyncio.sleep(0.02)
-            
+
             # 再发送 content（最终回答）
             if assistant_content:
                 chunk_size = 4
@@ -494,21 +533,21 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
                     }
                     yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n".encode()
                     await asyncio.sleep(0.02)
-            
+
             # 结束标记
             yield f"data: {json.dumps({'id': msg_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]}, ensure_ascii=False)}\n\n".encode()
             yield b"data: [DONE]\n\n"
-    
+
     return StreamingResponse(generate_sse(), media_type="text/event-stream")
 
 # ============ 正常流式处理 ============
 
-async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -> AsyncGenerator[bytes, None]:
+async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily") -> AsyncGenerator[bytes, None]:
     assistant_chunks = []
     reasoning_chunks = []
     proxy = get_proxy(url)
     timeout = get_timeout(body.get("model", ""))
-    
+
     async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
@@ -532,15 +571,15 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -
                             reasoning_chunks.append(reasoning)
                     except:
                         pass
-    
+
     assistant_msg = "".join(assistant_chunks)
     reasoning_msg = "".join(reasoning_chunks)
-    
-    # 存储：优先存content，content为空则存reasoning
+
+    # 存储（v2: 带scene_type，使用pgvector）
     storage_text = assistant_msg or reasoning_msg
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, storage_text)
+            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type)
             asyncio.create_task(check_and_generate_summary())
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
@@ -549,10 +588,10 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str) -
 
 # ============ 非流式处理 ============
 
-async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str) -> JSONResponse:
+async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily") -> JSONResponse:
     proxy = get_proxy(url)
     timeout = get_timeout(body.get("model", ""))
-    
+
     try:
         async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
             response = await client.post(url, headers=headers, json=body)
@@ -562,13 +601,13 @@ async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str)
     except Exception as e:
         print(f"[NonStream] Connection error: {e}")
         return JSONResponse(status_code=502, content={"error": str(e)})
-    
+
     if response.status_code != 200:
         print(f"[NonStream] Backend error {response.status_code}: {response.text[:300]}")
         return JSONResponse(status_code=response.status_code, content={"error": response.text})
-    
+
     result = response.json()
-    
+
     # 提取content和reasoning_content
     assistant_msg = ""
     reasoning_msg = ""
@@ -578,21 +617,21 @@ async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str)
         reasoning_msg = message.get("reasoning_content", "") or ""
     except:
         pass
-    
+
     if not assistant_msg and not reasoning_msg:
         print(f"[NonStream] WARNING: Empty response! Full result: {json.dumps(result, ensure_ascii=False)[:500]}")
-    
-    # 存储：优先存content，content为空则存reasoning
+
+    # 存储（v2: 带scene_type，使用pgvector）
     storage_text = assistant_msg or reasoning_msg
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, storage_text)
+            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type)
             asyncio.create_task(check_and_generate_summary())
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
         except Exception as e:
             print(f"[NonStream] Storage error: {e}")
-    
+
     return JSONResponse(content=result)
 
 if __name__ == "__main__":

@@ -6,5 +6,6 @@ chroma_db/
 node_modules/
 *.bak
 *.bak.*
+*.bak_v2
 dist/
 .DS_Store
