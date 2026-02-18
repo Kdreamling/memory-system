@@ -178,10 +178,9 @@ async def vector_search_rpc(
 
         params = {
             "query_embedding": embedding_str,
-            "match_count": limit
+            "match_count": limit,
+            "filter_scene": scene_type  # None会被PostgREST传为null
         }
-        if scene_type:
-            params["filter_scene"] = scene_type
 
         def _rpc():
             result = supabase.rpc(func_name, params).execute()
