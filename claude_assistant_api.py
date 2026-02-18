@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+import os
 
 app = FastAPI(title="晨的私人助手")
 
@@ -25,9 +27,14 @@ app.add_middleware(
 # 北京时区
 BEIJING_TZ = timezone(timedelta(hours=8))
 
-# Supabase配置
-SUPABASE_URL = "https://szjzqklanwwkzjzwnalu.supabase.co"
-SUPABASE_KEY = "sb_secret_TP4Z2QQYNxXuCJkwB-UQ0A_HxPOB7Ih"
+# 加载环境变量
+load_dotenv("/home/dream/memory-system/.env")
+
+# Supabase配置（从.env读取）
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("请在 .env 中设置 SUPABASE_URL 和 SUPABASE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def get_beijing_date():
