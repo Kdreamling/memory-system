@@ -107,7 +107,7 @@ Gateway /v1/chat/completions 接收
 ├── CLAUDE.md                         # Claude Code 项目指南
 ├── README.md                         # 项目说明文档
 ├── memory_system_progress_v8.md      # 本文件：完整项目文档
-├── kelivo_memory_v2_spec.md          # Gateway v2 设计规格书
+├── kelivo_memory_v2_spec.md          # Gateway v2 设计规格书（历史参考文档，改造已完成）
 │
 ├── ===== Kelivo Gateway (端口8001) =====
 ├── gateway/
@@ -853,8 +853,10 @@ cd /home/dream/memory-system && python3 daily_diary.py gemini-2.5-pro-ag
 | 项目 | 值 |
 |------|------|
 | 云服务商 | 阿里云 ECS |
-| 操作系统 | Linux (宝塔面板管理) |
-| Python | Python 3.x |
+| 配置 | 2核CPU + 2GB内存（目前免费，之后视情况进行调整升级） |
+| 操作系统 | Ubuntu 22.04 |
+| Python | 3.10.12 |
+| 公网IP | 47.86.37.182 |
 | 域名 | kdreamling.work |
 | SSL | 宝塔面板自动管理（Let's Encrypt） |
 | Web服务器 | Nginx（宝塔管理） |
@@ -931,14 +933,14 @@ https://kdreamling.work/
 
 ## 十二、版本历史
 
-| 版本 | 大约时间 | 主要变更 |
+| 版本 | 时间 | 主要变更 |
 |------|----------|----------|
-| 初始 | - | 搭建 Kelivo Gateway 基础代理 + Supabase 对话存储 |
-| v1.x | - | 添加 ChromaDB 本地向量搜索、MemU 集成、语雀同步 |
-| v2.0 | - | mcp_server.py 独立 MCP 服务器（晨的助手前身） |
-| v5.0 | - | 晨的助手升级：3个工具（query/save/delete）、4种数据类型（expense/memory/chat_memory/diary） |
-| v7.0 | - | 晨的助手重构：统一工具模式，精简代码 |
-| **v8.0** | **2026-02** | **晨的助手**：4个工具（+update）、7种数据类型（+promise/wishlist/milestone）|
+| 初始 | 2026-01-22 | 搭建 Kelivo Gateway 基础代理 + Supabase 对话存储 |
+| v1.x | 2026-01-24 ~ 01-26 | 添加 ChromaDB 本地向量搜索、MemU 集成、语雀同步 |
+| v2.0 | 2026-01-31 | mcp_server.py 独立 MCP 服务器（晨的助手前身） |
+| v5.0 | 2026-02-03 | 晨的助手升级：3个工具（query/save/delete）、4种数据类型（expense/memory/chat_memory/diary） |
+| v7.0 | 2026-02-04 | 晨的助手重构：统一工具模式，精简代码 |
+| **v8.0** | **2026-02-18** | **晨的助手**：4个工具（+update）、7种数据类型（+promise/wishlist/milestone）|
 | | | **Gateway v2.2**：场景检测 + 混合检索 + 自动注入 + pgvector + 同义词服务 |
 | | | **数据库**：conversations/summaries 新增 scene_type/topic/entities/emotion/embedding 字段 |
 | | | **数据库**：新增 synonym_map 表 + RPC搜索函数 |
