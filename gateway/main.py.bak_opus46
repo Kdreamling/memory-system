@@ -165,12 +165,6 @@ BACKENDS = {
         "model_name": "anthropic/claude-opus-4.5",
         "extra_headers": {"HTTP-Referer": "https://memory-system.local", "X-Title": "Memory Gateway"}
     },
-    "claude-opus-4.6": {
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key": settings.openrouter_api_key,
-        "model_name": "anthropic/claude-opus-4.6",
-        "extra_headers": {"HTTP-Referer": "https://memory-system.local", "X-Title": "Memory Gateway"}
-    },
 }
 
 MODEL_ALIASES = {
@@ -190,9 +184,6 @@ MODEL_ALIASES = {
     "claude-sonnet-4.5": "claude-sonnet-4.5",
     "claude-opus": "claude-opus-4.5",
     "claude-opus-4.5": "claude-opus-4.5",
-    "claude-opus-4.6": "claude-opus-4.6",
-    "opus-4.6": "claude-opus-4.6",
-    "opus4.6": "claude-opus-4.6",
     "deepseek": "deepseek-chat",
     "deepseek-chat": "deepseek-chat",
     "deepseek-reasoner": "deepseek-reasoner",
