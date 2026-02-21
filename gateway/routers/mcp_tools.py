@@ -15,6 +15,7 @@ sys.path.insert(0, '/home/dream/memory-system/gateway')
 from services.storage import get_recent_conversations, search_conversations, get_recent_summaries
 from services.hybrid_search import hybrid_search
 from services.yuque_service import sync_diary_to_yuque
+from services.amap_service import maps_geo, maps_around, maps_search, maps_distance, maps_route
 
 router = APIRouter()
 
@@ -110,6 +111,138 @@ MCP_TOOLS = [
             },
             "required": ["mood"]
         }
+    },
+    # ===== 云逛街 - 高德地图工具 =====
+    {
+        "name": "maps_geo",
+        "description": "地理编码：把地名、地址、路牌名转换为经纬度坐标。当需要获取某个地方的精确坐标时调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string",
+                    "description": "地名或地址，如'广州塔''北京路步行街''海珠区新港东路'"
+                },
+                "city": {
+                    "type": "string",
+                    "description": "城市名，提高精度，如'广州''深圳'。不填则全国范围搜索"
+                }
+            },
+            "required": ["address"]
+        }
+    },
+    {
+        "name": "maps_around",
+        "description": "周边搜索：以某个位置为中心，搜索附近的餐厅、商店、景点等。适合'附近有什么好吃的''周围有没有书店'等场景。支持坐标或地名作为中心点。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "搜索关键词，如'奶茶''书店''火锅''咖啡馆'。不填则搜所有类型"
+                },
+                "location": {
+                    "type": "string",
+                    "description": "中心点坐标'经度,纬度'（和address二选一）"
+                },
+                "address": {
+                    "type": "string",
+                    "description": "中心点地名，如'天河城''北京路'（会自动转坐标）"
+                },
+                "city": {
+                    "type": "string",
+                    "description": "城市名（配合address使用，提高精度）"
+                },
+                "radius": {
+                    "type": "integer",
+                    "description": "搜索半径（米），默认1000，最大50000",
+                    "default": 1000
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "返回数量，默认10，最大25",
+                    "default": 10
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "maps_search",
+        "description": "城市搜索：在整个城市范围内搜索地点。适合'这个城市有什么好的咖啡馆''广州哪里有密室逃脱'等场景。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "搜索关键词，如'网红书店''密室逃脱''猫咖'"
+                },
+                "city": {
+                    "type": "string",
+                    "description": "城市名，如'广州''上海'。建议填写，不填则全国搜索"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "返回数量，默认10，最大25",
+                    "default": 10
+                }
+            },
+            "required": ["keyword"]
+        }
+    },
+    {
+        "name": "maps_distance",
+        "description": "距离测量：计算两个地点之间的距离和预估到达时间。支持步行、驾车计算。起点终点可以用坐标或地名。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "origin": {
+                    "type": "string",
+                    "description": "起点，可以是坐标'经度,纬度'或地名"
+                },
+                "destination": {
+                    "type": "string",
+                    "description": "终点，可以是坐标'经度,纬度'或地名"
+                },
+                "city": {
+                    "type": "string",
+                    "description": "城市名（当起点终点是地名时提高精度）"
+                },
+                "mode": {
+                    "type": "integer",
+                    "description": "出行方式：0驾车(默认) 1步行 3直线距离",
+                    "default": 0
+                }
+            },
+            "required": ["origin", "destination"]
+        }
+    },
+    {
+        "name": "maps_route",
+        "description": "路线规划：规划从A到B的详细路线，包含每一步怎么走。支持步行、驾车、公交三种方式。起点终点可以用坐标或地名。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "origin": {
+                    "type": "string",
+                    "description": "起点，可以是坐标'经度,纬度'或地名"
+                },
+                "destination": {
+                    "type": "string",
+                    "description": "终点，可以是坐标'经度,纬度'或地名"
+                },
+                "city": {
+                    "type": "string",
+                    "description": "城市名（地名转坐标用 + 公交规划必填）"
+                },
+                "mode": {
+                    "type": "string",
+                    "description": "出行方式：walking步行(默认) / driving驾车 / transit公交",
+                    "default": "walking"
+                }
+            },
+            "required": ["origin", "destination"]
+        }
     }
 ]
 
@@ -195,6 +328,41 @@ async def handle_tools_call(params: dict) -> dict:
         return await execute_save_diary(arguments)
     elif tool_name == "send_sticker":
         return execute_send_sticker(arguments)
+    # ===== 云逛街 - 高德地图工具 =====
+    elif tool_name == "maps_geo":
+        return await maps_geo(
+            address=arguments.get("address", ""),
+            city=arguments.get("city", ""),
+        )
+    elif tool_name == "maps_around":
+        return await maps_around(
+            keyword=arguments.get("keyword", ""),
+            location=arguments.get("location", ""),
+            address=arguments.get("address", ""),
+            city=arguments.get("city", ""),
+            radius=arguments.get("radius", 1000),
+            limit=arguments.get("limit", 10),
+        )
+    elif tool_name == "maps_search":
+        return await maps_search(
+            keyword=arguments.get("keyword", ""),
+            city=arguments.get("city", ""),
+            limit=arguments.get("limit", 10),
+        )
+    elif tool_name == "maps_distance":
+        return await maps_distance(
+            origin=arguments.get("origin", ""),
+            destination=arguments.get("destination", ""),
+            city=arguments.get("city", ""),
+            mode=arguments.get("mode", 0),
+        )
+    elif tool_name == "maps_route":
+        return await maps_route(
+            origin=arguments.get("origin", ""),
+            destination=arguments.get("destination", ""),
+            city=arguments.get("city", ""),
+            mode=arguments.get("mode", "walking"),
+        )
     else:
         return {
             "content": [{"type": "text", "text": f"Unknown tool: {tool_name}"}],

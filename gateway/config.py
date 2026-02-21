@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # 硅基流动配置（用于Embedding）
     siliconflow_api_key: Optional[str] = ""
     
+    # 高德地图API（云逛街功能）
+    amap_api_key: str = ""
+
     # 代理配置
     proxy_url: str = ""
     yuque_token: str = ""
