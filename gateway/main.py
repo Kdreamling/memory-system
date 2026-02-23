@@ -6,6 +6,7 @@ v2.2 - 场景检测 + 混合检索 + pgvector + 自动注入
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
+from starlette.background import BackgroundTask
 from contextlib import asynccontextmanager
 import httpx
 import json
@@ -370,7 +371,12 @@ async def proxy_chat_completions(request: Request):
     if "假流式" in requested_model:
         return await fake_stream_to_normal(target_url, headers, body, user_msg, current_scene, channel)
     elif is_stream:
-        return StreamingResponse(stream_and_store(target_url, headers, body, user_msg, current_scene, channel), media_type="text/event-stream")
+        collector = {"assistant_chunks": [], "reasoning_chunks": []}
+        return StreamingResponse(
+            stream_chunks(target_url, headers, body, collector),
+            media_type="text/event-stream",
+            background=BackgroundTask(store_stream_result, collector, user_msg, current_scene, channel)
+        )
     else:
         return await non_stream_request(target_url, headers, body, user_msg, current_scene, channel)
 
@@ -563,43 +569,57 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
 
 # ============ 正常流式处理 ============
 
-async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily", channel: str = "deepseek") -> AsyncGenerator[bytes, None]:
-    assistant_chunks = []
-    reasoning_chunks = []
+async def stream_chunks(url: str, headers: dict, body: dict, collector: dict) -> AsyncGenerator[bytes, None]:
+    """流式转发响应给客户端，同时收集 chunks 到 collector 字典。
+    存储逻辑由 BackgroundTask(store_stream_result) 在响应结束后独立执行，
+    避免客户端断连导致 async generator 被取消而丢失存储。"""
     proxy = get_proxy(url)
     timeout = get_timeout(body.get("model", ""))
 
-    async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
-        async with client.stream("POST", url, headers=headers, json=body) as response:
-            if response.status_code != 200:
-                error_body = await response.aread()
-                print(f"[Stream] Backend error {response.status_code}: {error_body.decode()[:300]}")
-                yield f"data: {json.dumps({'error': error_body.decode()})}\n\n".encode()
-                return
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    yield f"{line}\n\n".encode()
-                    if line == "data: [DONE]":
-                        continue
-                    try:
-                        data = json.loads(line[6:])
-                        delta = data.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        reasoning = delta.get("reasoning_content", "")
-                        if content:
-                            assistant_chunks.append(content)
-                        if reasoning:
-                            reasoning_chunks.append(reasoning)
-                    except:
-                        pass
+    try:
+        async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                if response.status_code != 200:
+                    error_body = await response.aread()
+                    print(f"[Stream] Backend error {response.status_code}: {error_body.decode()[:300]}")
+                    yield f"data: {json.dumps({'error': error_body.decode()})}\n\n".encode()
+                    collector["error"] = True
+                    return
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        yield f"{line}\n\n".encode()
+                        if line == "data: [DONE]":
+                            continue
+                        try:
+                            data = json.loads(line[6:])
+                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            reasoning = delta.get("reasoning_content", "")
+                            if content:
+                                collector["assistant_chunks"].append(content)
+                            if reasoning:
+                                collector["reasoning_chunks"].append(reasoning)
+                        except:
+                            pass
+    except Exception as e:
+        print(f"[Stream] Connection error: {e}")
+        collector["error"] = True
 
+
+async def store_stream_result(collector: dict, user_msg: str, scene_type: str, channel: str):
+    """BackgroundTask：在流式响应完全结束后执行，将收集到的内容存入数据库。
+    此函数独立于 StreamingResponse 运行，不受客户端断连影响。"""
+    if collector.get("error"):
+        print(f"[Stream] Storage skipped due to stream error")
+        return
+
+    assistant_chunks = collector.get("assistant_chunks", [])
+    reasoning_chunks = collector.get("reasoning_chunks", [])
     assistant_msg = "".join(assistant_chunks)
     reasoning_msg = "".join(reasoning_chunks)
 
-    # 调试日志：检查 chunk 收集情况
     print(f"[Stream] Chunks collected: content={len(assistant_chunks)}, reasoning={len(reasoning_chunks)}, user_msg_len={len(user_msg)}, skip={should_skip_storage(user_msg) if user_msg else 'no_user_msg'}")
 
-    # 存储（v3: 带scene_type + channel，使用pgvector）
     storage_text = assistant_msg or reasoning_msg
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
