@@ -596,6 +596,9 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, s
     assistant_msg = "".join(assistant_chunks)
     reasoning_msg = "".join(reasoning_chunks)
 
+    # 调试日志：检查 chunk 收集情况
+    print(f"[Stream] Chunks collected: content={len(assistant_chunks)}, reasoning={len(reasoning_chunks)}, user_msg_len={len(user_msg)}, skip={should_skip_storage(user_msg) if user_msg else 'no_user_msg'}")
+
     # 存储（v3: 带scene_type + channel，使用pgvector）
     storage_text = assistant_msg or reasoning_msg
     if user_msg and storage_text and not should_skip_storage(user_msg):
@@ -604,8 +607,11 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, s
             asyncio.create_task(check_and_generate_summary(channel=channel))
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
+            print(f"[Stream] Saved to DB (scene={scene_type}, channel={channel})")
         except Exception as e:
             print(f"[Stream] Storage error: {e}")
+    else:
+        print(f"[Stream] Storage SKIPPED: user_msg={bool(user_msg)}, storage_text={bool(storage_text)}, content_len={len(assistant_msg)}, reasoning_len={len(reasoning_msg)}")
 
 # ============ 非流式处理 ============
 
