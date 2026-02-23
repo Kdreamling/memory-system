@@ -94,10 +94,11 @@ async def search_similar(
     query_embedding: List[float],
     table: str,
     scene_type: Optional[str] = None,
-    limit: int = 10
+    limit: int = 10,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """
-    在指定表中执行向量搜索，支持scene_type过滤
+    在指定表中执行向量搜索，支持scene_type和channel过滤
     使用Supabase RPC调用pgvector的余弦距离搜索
     """
     try:
@@ -109,16 +110,15 @@ async def search_similar(
         if table == "conversations":
             def _search():
                 query = supabase.table("conversations") \
-                    .select("id, user_msg, assistant_msg, created_at, scene_type, topic, emotion, round_number")
+                    .select("id, user_msg, assistant_msg, created_at, scene_type, topic, emotion, round_number") \
+                    .eq("model_channel", channel)
 
                 if scene_type:
                     if scene_type == "daily":
-                        # daily 模式搜索 daily 和 plot
                         query = query.in_("scene_type", ["daily", "plot"])
                     else:
                         query = query.eq("scene_type", scene_type)
 
-                # 使用 embedding 不为空的记录
                 query = query.not_.is_("embedding", "null")
                 result = query.order("created_at", desc=True).limit(limit * 3).execute()
                 return result.data if result.data else []
@@ -126,7 +126,8 @@ async def search_similar(
         elif table == "summaries":
             def _search():
                 query = supabase.table("summaries") \
-                    .select("id, summary, created_at, scene_type, topic, start_round, end_round")
+                    .select("id, summary, created_at, scene_type, topic, start_round, end_round") \
+                    .eq("model_channel", channel)
 
                 if scene_type:
                     if scene_type == "daily":
@@ -142,9 +143,6 @@ async def search_similar(
 
         candidates = await asyncio.to_thread(_search)
 
-        # 由于Supabase REST API不直接支持pgvector排序，
-        # 我们通过RPC或后处理来实现排序
-        # 这里先返回候选结果，由hybrid_search做后续rerank
         return candidates[:limit]
 
     except Exception as e:
@@ -156,7 +154,8 @@ async def vector_search_rpc(
     query_embedding: List[float],
     table: str,
     scene_type: Optional[str] = None,
-    limit: int = 15
+    limit: int = 15,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """
     使用Supabase PostgREST RPC调用pgvector搜索
@@ -179,7 +178,8 @@ async def vector_search_rpc(
         params = {
             "query_embedding": embedding_str,
             "match_count": limit,
-            "filter_scene": scene_type  # None会被PostgREST传为null
+            "filter_scene": scene_type,  # None会被PostgREST传为null
+            "filter_channel": channel
         }
 
         def _rpc():
@@ -192,4 +192,4 @@ async def vector_search_rpc(
     except Exception as e:
         # RPC不可用时降级
         print(f"[pgvector] RPC search failed, falling back: {e}")
-        return await search_similar(query_embedding, table, scene_type, limit)
+        return await search_similar(query_embedding, table, scene_type, limit, channel)

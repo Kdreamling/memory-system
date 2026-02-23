@@ -85,12 +85,12 @@ def _determine_scene_type(conversations: list) -> str:
     return "daily"
 
 
-async def check_and_generate_summary(user_id: str = "dream") -> bool:
+async def check_and_generate_summary(user_id: str = "dream", channel: str = "deepseek") -> bool:
     """检查是否需要生成摘要，如果需要就生成"""
 
     try:
-        current_round = await get_current_round(user_id)
-        last_summarized = await get_last_summarized_round(user_id)
+        current_round = await get_current_round(user_id, channel=channel)
+        last_summarized = await get_last_summarized_round(user_id, channel=channel)
 
         # 计算未摘要的轮数
         unsummarized_rounds = current_round - last_summarized
@@ -106,7 +106,8 @@ async def check_and_generate_summary(user_id: str = "dream") -> bool:
             conversations = await get_conversations_for_summary(
                 user_id=user_id,
                 start_round=start_round,
-                end_round=end_round
+                end_round=end_round,
+                channel=channel
             )
 
             if not conversations:
@@ -125,9 +126,10 @@ async def check_and_generate_summary(user_id: str = "dream") -> bool:
                     start_round=start_round,
                     end_round=end_round,
                     user_id=user_id,
-                    scene_type=scene_type
+                    scene_type=scene_type,
+                    channel=channel
                 )
-                print(f"[Summary] Saved summary for rounds {start_round}-{end_round} (scene={scene_type})")
+                print(f"[Summary] Saved summary for rounds {start_round}-{end_round} (scene={scene_type}, channel={channel})")
 
                 # 摘要向量化（存入pgvector，永久保留）
                 if summary_id:

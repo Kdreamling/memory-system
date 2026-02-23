@@ -227,6 +227,14 @@ async def process_citations(assistant_msg: str) -> str:
     clean_msg = re.sub(pattern, "", assistant_msg)
     return clean_msg
 
+def get_channel_from_model(model: str) -> str:
+    """根据模型名推断记忆通道：claude 系列走 claude 通道，其他走 deepseek 通道"""
+    resolved = MODEL_ALIASES.get(model.lower(), model)
+    if "claude" in resolved.lower():
+        return "claude"
+    return "deepseek"
+
+
 def get_backend_config(model: str) -> dict:
     resolved_model = MODEL_ALIASES.get(model.lower(), model)
     if resolved_model in BACKENDS:
@@ -329,12 +337,15 @@ async def proxy_chat_completions(request: Request):
                 user_msg = " ".join(part.get("text", "") for part in content if part.get("type") == "text")
             break
 
+    # ===== v3: 推断记忆通道 =====
+    channel = get_channel_from_model(requested_model)
+
     # ===== v2: 场景检测 =====
     current_scene = "daily"
     try:
-        current_scene = scene_detector.detect(user_msg)
+        current_scene = scene_detector.detect(user_msg, channel=channel)
         if scene_detector.has_scene_changed():
-            print(f"[v2] Scene changed to: {current_scene}")
+            print(f"[v2] Scene changed to: {current_scene} (channel={channel})")
     except Exception as e:
         print(f"[v2] Scene detection error: {e}")
 
@@ -343,7 +354,8 @@ async def proxy_chat_completions(request: Request):
         messages = await auto_inject.process(
             user_msg=user_msg,
             scene_type=current_scene,
-            messages=messages
+            messages=messages,
+            channel=channel
         )
         body["messages"] = messages
     except Exception as e:
@@ -352,19 +364,19 @@ async def proxy_chat_completions(request: Request):
     is_stream = body.get("stream", False)
     target_url = f"{backend['base_url']}/chat/completions"
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {requested_model} -> {backend['model_name']} | stream={is_stream} | scene={current_scene}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {requested_model} -> {backend['model_name']} | stream={is_stream} | scene={current_scene} | channel={channel}")
 
     # 假流式模型走非流式请求再包装成SSE
     if "假流式" in requested_model:
-        return await fake_stream_to_normal(target_url, headers, body, user_msg, current_scene)
+        return await fake_stream_to_normal(target_url, headers, body, user_msg, current_scene, channel)
     elif is_stream:
-        return StreamingResponse(stream_and_store(target_url, headers, body, user_msg, current_scene), media_type="text/event-stream")
+        return StreamingResponse(stream_and_store(target_url, headers, body, user_msg, current_scene, channel), media_type="text/event-stream")
     else:
-        return await non_stream_request(target_url, headers, body, user_msg, current_scene)
+        return await non_stream_request(target_url, headers, body, user_msg, current_scene, channel)
 
 # ============ 假流式处理 ============
 
-async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily"):
+async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily", channel: str = "deepseek"):
     """
     假流式：
     1. 去掉模型名前缀，以非流式方式请求
@@ -418,15 +430,15 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
     if not assistant_content and not reasoning_content and not tool_calls:
         print(f"[FakeStream] WARNING: Empty response! Full result: {json.dumps(result, ensure_ascii=False)[:500]}")
 
-    # 存储到数据库（v2: 带scene_type，使用pgvector）
+    # 存储到数据库（v3: 带scene_type + channel，使用pgvector）
     storage_text = assistant_content or reasoning_content
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type)
-            asyncio.create_task(check_and_generate_summary())
+            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type, channel=channel)
+            asyncio.create_task(check_and_generate_summary(channel=channel))
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
-            print(f"[FakeStream] Saved to DB (scene={scene_type})")
+            print(f"[FakeStream] Saved to DB (scene={scene_type}, channel={channel})")
         except Exception as e:
             print(f"[FakeStream] Storage error: {e}")
 
@@ -551,7 +563,7 @@ async def fake_stream_to_normal(url: str, headers: dict, body: dict, user_msg: s
 
 # ============ 正常流式处理 ============
 
-async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily") -> AsyncGenerator[bytes, None]:
+async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily", channel: str = "deepseek") -> AsyncGenerator[bytes, None]:
     assistant_chunks = []
     reasoning_chunks = []
     proxy = get_proxy(url)
@@ -584,12 +596,12 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, s
     assistant_msg = "".join(assistant_chunks)
     reasoning_msg = "".join(reasoning_chunks)
 
-    # 存储（v2: 带scene_type，使用pgvector）
+    # 存储（v3: 带scene_type + channel，使用pgvector）
     storage_text = assistant_msg or reasoning_msg
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type)
-            asyncio.create_task(check_and_generate_summary())
+            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type, channel=channel)
+            asyncio.create_task(check_and_generate_summary(channel=channel))
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
         except Exception as e:
@@ -597,7 +609,7 @@ async def stream_and_store(url: str, headers: dict, body: dict, user_msg: str, s
 
 # ============ 非流式处理 ============
 
-async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily") -> JSONResponse:
+async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str, scene_type: str = "daily", channel: str = "deepseek") -> JSONResponse:
     proxy = get_proxy(url)
     timeout = get_timeout(body.get("model", ""))
 
@@ -630,12 +642,12 @@ async def non_stream_request(url: str, headers: dict, body: dict, user_msg: str,
     if not assistant_msg and not reasoning_msg:
         print(f"[NonStream] WARNING: Empty response! Full result: {json.dumps(result, ensure_ascii=False)[:500]}")
 
-    # 存储（v2: 带scene_type，使用pgvector）
+    # 存储（v3: 带scene_type + channel，使用pgvector）
     storage_text = assistant_msg or reasoning_msg
     if user_msg and storage_text and not should_skip_storage(user_msg):
         try:
-            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type)
-            asyncio.create_task(check_and_generate_summary())
+            conv_id = await save_conversation_with_round(user_msg, storage_text, scene_type=scene_type, channel=channel)
+            asyncio.create_task(check_and_generate_summary(channel=channel))
             if conv_id:
                 asyncio.create_task(store_conversation_embedding(conv_id, user_msg, storage_text))
         except Exception as e:

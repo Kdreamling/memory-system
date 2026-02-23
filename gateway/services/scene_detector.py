@@ -26,64 +26,75 @@ class SceneDetector:
     ]
 
     def __init__(self):
-        self._current_scene = "daily"
-        self._previous_scene = "daily"
+        # 按 channel 隔离场景状态
+        self._scenes = {}  # {channel: {"current": "daily", "previous": "daily"}}
         self._scene_changed = False
 
-    def detect(self, user_msg: str) -> str:
+    def _get_scene_state(self, channel: str) -> dict:
+        """获取指定 channel 的场景状态，不存在则初始化"""
+        if channel not in self._scenes:
+            self._scenes[channel] = {"current": "daily", "previous": "daily"}
+        return self._scenes[channel]
+
+    def detect(self, user_msg: str, channel: str = "deepseek") -> str:
         """
         检测消息的场景类型
         返回 'daily' | 'plot' | 'meta'
         """
+        state = self._get_scene_state(channel)
+
         if not user_msg:
-            return self._current_scene
+            return state["current"]
 
         msg_lower = user_msg.lower()
-        self._previous_scene = self._current_scene
+        state["previous"] = state["current"]
         self._scene_changed = False
 
         # 优先级1：meta 判定
         for kw in self.META_KEYWORDS:
             if kw.lower() in msg_lower:
-                if self._current_scene != "meta":
+                if state["current"] != "meta":
                     self._scene_changed = True
-                self._current_scene = "meta"
+                state["current"] = "meta"
                 return "meta"
 
         # 优先级2：plot 退出判定（先检查退出，再检查进入）
         for kw in self.PLOT_EXIT_KEYWORDS:
             if kw in user_msg:
-                if self._current_scene != "daily":
+                if state["current"] != "daily":
                     self._scene_changed = True
-                self._current_scene = "daily"
+                state["current"] = "daily"
                 return "daily"
 
         # 优先级3：plot 进入判定
         for kw in self.PLOT_ENTER_KEYWORDS:
             if kw in user_msg:
-                if self._current_scene != "plot":
+                if state["current"] != "plot":
                     self._scene_changed = True
-                self._current_scene = "plot"
+                state["current"] = "plot"
                 return "plot"
 
         # 优先级4：继承当前场景（plot模式下后续消息自动继承）
         # meta 不继承，单条消息有效后回到之前的场景
-        if self._previous_scene == "meta":
-            self._current_scene = "daily"
+        if state["previous"] == "meta":
+            state["current"] = "daily"
             return "daily"
 
-        return self._current_scene
+        return state["current"]
 
-    def get_current_scene(self) -> str:
+    def get_current_scene(self, channel: str = "deepseek") -> str:
         """获取当前场景状态"""
-        return self._current_scene
+        state = self._get_scene_state(channel)
+        return state["current"]
 
     def has_scene_changed(self) -> bool:
         """本次消息是否触发了场景切换"""
         return self._scene_changed
 
-    def reset(self):
+    def reset(self, channel: str = None):
         """重置场景状态（用于测试或手动重置）"""
-        self._current_scene = "daily"
-        self._previous_scene = "daily"
+        if channel:
+            self._scenes[channel] = {"current": "daily", "previous": "daily"}
+        else:
+            self._scenes = {}
         self._scene_changed = False

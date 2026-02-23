@@ -23,7 +23,8 @@ async def hybrid_search(
     query: str,
     scene_type: str = "daily",
     synonym_service=None,
-    limit: int = 5
+    limit: int = 5,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """
     执行混合检索
@@ -33,6 +34,7 @@ async def hybrid_search(
         scene_type: 当前场景类型
         synonym_service: 同义词服务实例
         limit: 最终返回条数
+        channel: 记忆通道（deepseek/claude）
 
     返回：
         排序后的检索结果列表
@@ -42,7 +44,7 @@ async def hybrid_search(
 
     try:
         results = await asyncio.wait_for(
-            _do_hybrid_search(query, scene_type, synonym_service, limit),
+            _do_hybrid_search(query, scene_type, synonym_service, limit, channel),
             timeout=SEARCH_TIMEOUT
         )
         return results
@@ -58,7 +60,8 @@ async def _do_hybrid_search(
     query: str,
     scene_type: str,
     synonym_service,
-    limit: int
+    limit: int,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """执行实际的混合检索流程"""
 
@@ -68,14 +71,14 @@ async def _do_hybrid_search(
         expanded_terms = synonym_service.expand(query)
         if query not in expanded_terms:
             expanded_terms.insert(0, query)
-    print(f"[HybridSearch] Expanded terms: {expanded_terms[:10]}")
+    print(f"[HybridSearch] Expanded terms: {expanded_terms[:10]} (channel={channel})")
 
     # 2. 并行执行关键词搜索和向量搜索
     keyword_task = asyncio.create_task(
-        _keyword_search(expanded_terms, scene_type, limit=15)
+        _keyword_search(expanded_terms, scene_type, limit=15, channel=channel)
     )
     vector_task = asyncio.create_task(
-        _vector_search(query, scene_type, limit=15)
+        _vector_search(query, scene_type, limit=15, channel=channel)
     )
 
     keyword_results, vector_results = await asyncio.gather(
@@ -105,7 +108,8 @@ async def _do_hybrid_search(
 async def _keyword_search(
     terms: List[str],
     scene_type: str,
-    limit: int = 15
+    limit: int = 15,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """关键词搜索：使用pg_trgm模糊匹配"""
     try:
@@ -122,6 +126,7 @@ async def _keyword_search(
             try:
                 query = supabase.table("conversations") \
                     .select("id, user_msg, assistant_msg, created_at, scene_type, topic, emotion, round_number") \
+                    .eq("model_channel", channel) \
                     .or_(f"user_msg.ilike.%{term}%,assistant_msg.ilike.%{term}%")
 
                 if scene_type == "plot":
@@ -141,6 +146,7 @@ async def _keyword_search(
             try:
                 query = supabase.table("summaries") \
                     .select("id, summary, created_at, scene_type, topic, start_round, end_round") \
+                    .eq("model_channel", channel) \
                     .ilike("summary", f"%{term}%")
 
                 if scene_type == "plot":
@@ -175,7 +181,8 @@ async def _keyword_search(
 async def _vector_search(
     query: str,
     scene_type: str,
-    limit: int = 15
+    limit: int = 15,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """向量搜索：使用pgvector"""
     try:
@@ -185,10 +192,10 @@ async def _vector_search(
 
         # 搜索conversations和summaries
         conv_results = await vector_search_rpc(
-            query_embedding, "conversations", scene_type, limit
+            query_embedding, "conversations", scene_type, limit, channel=channel
         )
         sum_results = await vector_search_rpc(
-            query_embedding, "summaries", scene_type, 5
+            query_embedding, "summaries", scene_type, 5, channel=channel
         )
 
         for row in conv_results:
@@ -309,7 +316,8 @@ def _fallback_sort(candidates: List[Dict], limit: int) -> List[Dict]:
 async def search_recent_by_emotion(
     emotion: str,
     days: int = 3,
-    limit: int = 5
+    limit: int = 5,
+    channel: str = "deepseek"
 ) -> List[Dict]:
     """搜索近期相同情感的对话"""
     try:
@@ -321,6 +329,7 @@ async def search_recent_by_emotion(
         def _search():
             result = supabase.table("conversations") \
                 .select("id, user_msg, assistant_msg, created_at, scene_type, emotion") \
+                .eq("model_channel", channel) \
                 .eq("emotion", emotion) \
                 .gte("created_at", cutoff) \
                 .order("created_at", desc=True) \

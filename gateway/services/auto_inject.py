@@ -38,30 +38,37 @@ class AutoInject:
 
     def __init__(self, synonym_service=None):
         self._synonym_service = synonym_service
-        # 会话轮数计数器（简单内存版，Gateway重启后重置）
+        # 会话轮数计数器（按 user_id + channel 隔离，Gateway重启后重置）
         self._session_rounds: Dict[str, int] = {}
 
-    def increment_round(self, user_id: str = "dream") -> int:
-        """增加会话轮数并返回当前值"""
-        self._session_rounds[user_id] = self._session_rounds.get(user_id, 0) + 1
-        return self._session_rounds[user_id]
+    def _round_key(self, user_id: str, channel: str) -> str:
+        """生成轮数计数器的键"""
+        return f"{user_id}_{channel}"
 
-    def get_round(self, user_id: str = "dream") -> int:
+    def increment_round(self, user_id: str = "dream", channel: str = "deepseek") -> int:
+        """增加会话轮数并返回当前值"""
+        key = self._round_key(user_id, channel)
+        self._session_rounds[key] = self._session_rounds.get(key, 0) + 1
+        return self._session_rounds[key]
+
+    def get_round(self, user_id: str = "dream", channel: str = "deepseek") -> int:
         """获取当前会话轮数"""
-        return self._session_rounds.get(user_id, 0)
+        key = self._round_key(user_id, channel)
+        return self._session_rounds.get(key, 0)
 
     async def process(
         self,
         user_msg: str,
         scene_type: str,
         messages: List[Dict],
-        user_id: str = "dream"
+        user_id: str = "dream",
+        channel: str = "deepseek"
     ) -> List[Dict]:
         """
         处理消息列表，根据规则决定是否注入记忆
         返回修改后的 messages 列表（可能在system prompt末尾追加记忆）
         """
-        current_round = self.increment_round(user_id)
+        current_round = self.increment_round(user_id, channel)
 
         # meta场景不注入
         if scene_type == "meta":
@@ -78,7 +85,7 @@ class AutoInject:
         # 执行检索
         try:
             memory_text = await self._execute_rule(
-                rule, search_query, user_msg, scene_type, user_id
+                rule, search_query, user_msg, scene_type, user_id, channel
             )
         except Exception as e:
             print(f"[AutoInject] Execution error: {e}")
@@ -129,19 +136,21 @@ class AutoInject:
         search_query: str,
         user_msg: str,
         scene_type: str,
-        user_id: str
+        user_id: str,
+        channel: str = "deepseek"
     ) -> Optional[str]:
         """执行检索规则并返回格式化的记忆文本"""
 
         if rule == "cold_start":
-            return await self._cold_start(user_id)
+            return await self._cold_start(user_id, channel)
 
         elif rule == "recall":
             results = await hybrid_search(
                 query=search_query or user_msg,
                 scene_type=scene_type,
                 synonym_service=self._synonym_service,
-                limit=5
+                limit=5,
+                channel=channel
             )
             return self._format_results(results, scene_type)
 
@@ -150,7 +159,8 @@ class AutoInject:
                 query=search_query or user_msg,
                 scene_type="plot",
                 synonym_service=self._synonym_service,
-                limit=5
+                limit=5,
+                channel=channel
             )
             return self._format_results(results, "plot")
 
@@ -158,19 +168,20 @@ class AutoInject:
             results = await search_recent_by_emotion(
                 emotion=search_query,
                 days=3,
-                limit=3
+                limit=3,
+                channel=channel
             )
             return self._format_results(results, scene_type)
 
         return None
 
-    async def _cold_start(self, user_id: str) -> Optional[str]:
+    async def _cold_start(self, user_id: str, channel: str = "deepseek") -> Optional[str]:
         """冷启动：拉最近2条摘要 + 最近3轮原文"""
         try:
             from services.storage import get_recent_summaries, get_recent_conversations
 
-            summaries = await get_recent_summaries(user_id, 2)
-            recent = await get_recent_conversations(user_id, 3)
+            summaries = await get_recent_summaries(user_id, 2, channel=channel)
+            recent = await get_recent_conversations(user_id, 3, channel=channel)
 
             if not summaries and not recent:
                 return None
