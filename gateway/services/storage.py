@@ -28,14 +28,15 @@ SKIP_KEYWORDS = [
 # supabase-py 是同步库，直接在 async 函数里调用会阻塞事件循环
 # 用 asyncio.to_thread() 把它丢到线程池，事件循环就不会被卡住了
 
-def _db_insert_conversation(user_id: str, user_msg: str, assistant_msg: str, round_number: int = None, scene_type: str = "daily") -> Optional[dict]:
+def _db_insert_conversation(user_id: str, user_msg: str, assistant_msg: str, round_number: int = None, scene_type: str = "daily", channel: str = "deepseek") -> Optional[dict]:
     """【同步】插入对话记录"""
     data = {
         "user_id": user_id,
         "user_msg": user_msg,
         "assistant_msg": assistant_msg,
         "synced_to_memu": False,
-        "scene_type": scene_type
+        "scene_type": scene_type,
+        "model_channel": channel
     }
     if round_number is not None:
         data["round_number"] = round_number
@@ -43,11 +44,12 @@ def _db_insert_conversation(user_id: str, user_msg: str, assistant_msg: str, rou
     return result.data[0] if result.data else None
 
 
-def _db_get_recent(user_id: str, limit: int) -> List[Dict]:
+def _db_get_recent(user_id: str, limit: int, channel: str = "deepseek") -> List[Dict]:
     """【同步】获取最近对话"""
     result = supabase.table("conversations") \
         .select("user_msg, assistant_msg, created_at, scene_type") \
         .eq("user_id", user_id) \
+        .eq("model_channel", channel) \
         .order("created_at", desc=True) \
         .limit(limit) \
         .execute()
@@ -74,11 +76,12 @@ def _db_mark_synced(conversation_id: str) -> bool:
     return True
 
 
-def _db_search(query: str, user_id: str, limit: int) -> List[Dict]:
+def _db_search(query: str, user_id: str, limit: int, channel: str = "deepseek") -> List[Dict]:
     """【同步】关键词搜索"""
     result = supabase.table("conversations") \
         .select("user_msg, assistant_msg, created_at") \
         .eq("user_id", user_id) \
+        .eq("model_channel", channel) \
         .or_(f"user_msg.ilike.%{query}%,assistant_msg.ilike.%{query}%") \
         .order("created_at", desc=True) \
         .limit(limit) \
@@ -112,11 +115,12 @@ def _db_get_by_id(conversation_id: str) -> Optional[Dict]:
     return result.data[0] if result.data else None
 
 
-def _db_get_current_round(user_id: str) -> int:
-    """【同步】获取当前轮数"""
+def _db_get_current_round(user_id: str, channel: str = "deepseek") -> int:
+    """【同步】获取当前轮数（按 channel 独立计数）"""
     result = supabase.table("conversations") \
         .select("round_number") \
         .eq("user_id", user_id) \
+        .eq("model_channel", channel) \
         .order("created_at", desc=True) \
         .limit(1) \
         .execute()
@@ -125,11 +129,12 @@ def _db_get_current_round(user_id: str) -> int:
     return 0
 
 
-def _db_get_conversations_for_summary(user_id: str, start_round: int, end_round: int) -> List[Dict]:
+def _db_get_conversations_for_summary(user_id: str, start_round: int, end_round: int, channel: str = "deepseek") -> List[Dict]:
     """【同步】获取指定轮数范围的对话"""
     result = supabase.table("conversations") \
         .select("user_msg, assistant_msg, round_number, created_at, scene_type") \
         .eq("user_id", user_id) \
+        .eq("model_channel", channel) \
         .gte("round_number", start_round) \
         .lte("round_number", end_round) \
         .order("round_number", desc=False) \
@@ -137,34 +142,37 @@ def _db_get_conversations_for_summary(user_id: str, start_round: int, end_round:
     return result.data if result.data else []
 
 
-def _db_save_summary(user_id: str, summary: str, start_round: int, end_round: int, scene_type: str = "daily") -> Optional[dict]:
+def _db_save_summary(user_id: str, summary: str, start_round: int, end_round: int, scene_type: str = "daily", channel: str = "deepseek") -> Optional[dict]:
     """【同步】保存摘要"""
     result = supabase.table("summaries").insert({
         "user_id": user_id,
         "summary": summary,
         "start_round": start_round,
         "end_round": end_round,
-        "scene_type": scene_type
+        "scene_type": scene_type,
+        "model_channel": channel
     }).execute()
     return result.data[0] if result.data else None
 
 
-def _db_get_recent_summaries(user_id: str, limit: int) -> List[Dict]:
+def _db_get_recent_summaries(user_id: str, limit: int, channel: str = "deepseek") -> List[Dict]:
     """【同步】获取最近摘要"""
     result = supabase.table("summaries") \
         .select("summary, start_round, end_round, created_at, scene_type") \
         .eq("user_id", user_id) \
+        .eq("model_channel", channel) \
         .order("created_at", desc=True) \
         .limit(limit) \
         .execute()
     return result.data if result.data else []
 
 
-def _db_get_last_summarized_round(user_id: str) -> int:
+def _db_get_last_summarized_round(user_id: str, channel: str = "deepseek") -> int:
     """【同步】获取最后摘要覆盖到的轮数"""
     result = supabase.table("summaries") \
         .select("end_round") \
         .eq("user_id", user_id) \
+        .eq("model_channel", channel) \
         .order("created_at", desc=True) \
         .limit(1) \
         .execute()
@@ -195,10 +203,10 @@ async def save_conversation(user_msg: str, assistant_msg: str, user_id: str = "d
         return None
 
 
-async def get_recent_conversations(user_id: str = "dream", limit: int = 4) -> List[Dict]:
+async def get_recent_conversations(user_id: str = "dream", limit: int = 4, channel: str = "deepseek") -> List[Dict]:
     """获取最近的对话"""
     try:
-        return await asyncio.to_thread(_db_get_recent, user_id, limit)
+        return await asyncio.to_thread(_db_get_recent, user_id, limit, channel)
     except Exception as e:
         print(f"[Storage] Get recent error: {e}")
         return []
@@ -222,10 +230,10 @@ async def mark_synced(conversation_id: str) -> bool:
         return False
 
 
-async def search_conversations(query: str, user_id: str = "dream", limit: int = 5) -> List[Dict]:
+async def search_conversations(query: str, user_id: str = "dream", limit: int = 5, channel: str = "deepseek") -> List[Dict]:
     """关键词搜索"""
     try:
-        return await asyncio.to_thread(_db_search, query, user_id, limit)
+        return await asyncio.to_thread(_db_search, query, user_id, limit, channel)
     except Exception as e:
         print(f"[Storage] Search error: {e}")
         return []
@@ -252,17 +260,17 @@ async def get_by_id(conversation_id: str) -> Optional[Dict]:
         return None
 
 
-async def get_current_round(user_id: str = "dream") -> int:
+async def get_current_round(user_id: str = "dream", channel: str = "deepseek") -> int:
     """获取当前对话轮数"""
     try:
-        return await asyncio.to_thread(_db_get_current_round, user_id)
+        return await asyncio.to_thread(_db_get_current_round, user_id, channel)
     except Exception as e:
         print(f"[Storage] Get round error: {e}")
         return 0
 
 
-async def save_conversation_with_round(user_msg: str, assistant_msg: str, user_id: str = "dream", scene_type: str = "daily") -> Optional[str]:
-    """保存对话并记录轮数（v2: 支持scene_type）"""
+async def save_conversation_with_round(user_msg: str, assistant_msg: str, user_id: str = "dream", scene_type: str = "daily", channel: str = "deepseek") -> Optional[str]:
+    """保存对话并记录轮数（v2: 支持scene_type, v3: 支持channel隔离）"""
     for kw in SKIP_KEYWORDS:
         if kw.lower() in user_msg.lower():
             print(f"[Storage] Skipped system message: {user_msg[:50]}...")
@@ -270,12 +278,12 @@ async def save_conversation_with_round(user_msg: str, assistant_msg: str, user_i
     if not user_msg.strip() or not assistant_msg.strip():
         return None
     try:
-        current_round = await asyncio.to_thread(_db_get_current_round, user_id)
+        current_round = await asyncio.to_thread(_db_get_current_round, user_id, channel)
         new_round = current_round + 1
-        row = await asyncio.to_thread(_db_insert_conversation, user_id, user_msg, assistant_msg, new_round, scene_type)
+        row = await asyncio.to_thread(_db_insert_conversation, user_id, user_msg, assistant_msg, new_round, scene_type, channel)
         if row:
             conv_id = row["id"]
-            print(f"[Storage] Saved conversation {conv_id[:8]}... (round {new_round}, scene={scene_type})")
+            print(f"[Storage] Saved conversation {conv_id[:8]}... (round {new_round}, scene={scene_type}, channel={channel})")
             return conv_id
         return None
     except Exception as e:
@@ -283,22 +291,22 @@ async def save_conversation_with_round(user_msg: str, assistant_msg: str, user_i
         return None
 
 
-async def get_conversations_for_summary(user_id: str = "dream", start_round: int = 1, end_round: int = 5) -> List[Dict]:
+async def get_conversations_for_summary(user_id: str = "dream", start_round: int = 1, end_round: int = 5, channel: str = "deepseek") -> List[Dict]:
     """获取指定轮数范围的对话"""
     try:
-        return await asyncio.to_thread(_db_get_conversations_for_summary, user_id, start_round, end_round)
+        return await asyncio.to_thread(_db_get_conversations_for_summary, user_id, start_round, end_round, channel)
     except Exception as e:
         print(f"[Storage] Get conversations for summary error: {e}")
         return []
 
 
-async def save_summary(summary: str, start_round: int, end_round: int, user_id: str = "dream", scene_type: str = "daily") -> Optional[str]:
-    """保存摘要（v2: 支持scene_type）"""
+async def save_summary(summary: str, start_round: int, end_round: int, user_id: str = "dream", scene_type: str = "daily", channel: str = "deepseek") -> Optional[str]:
+    """保存摘要（v2: 支持scene_type, v3: 支持channel隔离）"""
     try:
-        row = await asyncio.to_thread(_db_save_summary, user_id, summary, start_round, end_round, scene_type)
+        row = await asyncio.to_thread(_db_save_summary, user_id, summary, start_round, end_round, scene_type, channel)
         if row:
             summary_id = row["id"]
-            print(f"[Storage] Saved summary {summary_id[:8]}... (rounds {start_round}-{end_round}, scene={scene_type})")
+            print(f"[Storage] Saved summary {summary_id[:8]}... (rounds {start_round}-{end_round}, scene={scene_type}, channel={channel})")
             return summary_id
         return None
     except Exception as e:
@@ -306,19 +314,19 @@ async def save_summary(summary: str, start_round: int, end_round: int, user_id: 
         return None
 
 
-async def get_recent_summaries(user_id: str = "dream", limit: int = 3) -> List[Dict]:
+async def get_recent_summaries(user_id: str = "dream", limit: int = 3, channel: str = "deepseek") -> List[Dict]:
     """获取最近的摘要"""
     try:
-        return await asyncio.to_thread(_db_get_recent_summaries, user_id, limit)
+        return await asyncio.to_thread(_db_get_recent_summaries, user_id, limit, channel)
     except Exception as e:
         print(f"[Storage] Get summaries error: {e}")
         return []
 
 
-async def get_last_summarized_round(user_id: str = "dream") -> int:
+async def get_last_summarized_round(user_id: str = "dream", channel: str = "deepseek") -> int:
     """获取最后一次摘要覆盖到的轮数"""
     try:
-        return await asyncio.to_thread(_db_get_last_summarized_round, user_id)
+        return await asyncio.to_thread(_db_get_last_summarized_round, user_id, channel)
     except Exception as e:
         print(f"[Storage] Get last summarized round error: {e}")
         return 0
@@ -341,7 +349,7 @@ def _db_update_metadata(conversation_id: str, topic: str, entities: list, emotio
     return True
 
 
-def _db_fulltext_search(query_terms: list, scene_type: str, limit: int) -> List[Dict]:
+def _db_fulltext_search(query_terms: list, scene_type: str, limit: int, channel: str = "deepseek") -> List[Dict]:
     """【同步】全文搜索（使用pg_trgm模糊匹配）"""
     results = []
     for term in query_terms[:3]:
@@ -349,6 +357,7 @@ def _db_fulltext_search(query_terms: list, scene_type: str, limit: int) -> List[
             continue
         query = supabase.table("conversations") \
             .select("id, user_msg, assistant_msg, created_at, scene_type, topic, emotion, round_number") \
+            .eq("model_channel", channel) \
             .or_(f"user_msg.ilike.%{term}%,assistant_msg.ilike.%{term}%")
         if scene_type and scene_type != "daily":
             query = query.eq("scene_type", scene_type)
@@ -374,10 +383,10 @@ async def update_conversation_metadata(conv_id: str, topic: str = None, entities
         return False
 
 
-async def fulltext_search(query_terms: list, scene_type: str = None, limit: int = 10) -> List[Dict]:
+async def fulltext_search(query_terms: list, scene_type: str = None, limit: int = 10, channel: str = "deepseek") -> List[Dict]:
     """全文搜索（使用pg_trgm模糊匹配）"""
     try:
-        return await asyncio.to_thread(_db_fulltext_search, query_terms, scene_type, limit)
+        return await asyncio.to_thread(_db_fulltext_search, query_terms, scene_type, limit, channel)
     except Exception as e:
         print(f"[Storage] Fulltext search error: {e}")
         return []

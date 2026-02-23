@@ -60,6 +60,11 @@ MCP_TOOLS = [
                     "type": "integer",
                     "description": "返回结果数量",
                     "default": 5
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "记忆通道。Claude模型请传'claude'，其他模型不需要传（默认deepseek）",
+                    "default": "deepseek"
                 }
             },
             "required": []
@@ -75,6 +80,11 @@ MCP_TOOLS = [
                     "type": "integer",
                     "description": "获取最近多少轮对话",
                     "default": 4
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "记忆通道。Claude模型请传'claude'，其他模型不需要传（默认deepseek）",
+                    "default": "deepseek"
                 }
             },
             "required": []
@@ -373,22 +383,24 @@ async def handle_tools_call(params: dict) -> dict:
 # ============ 工具执行逻辑 ============
 
 async def execute_search_memory(args: dict) -> dict:
-    """执行搜索记忆 - v2.0 混合检索"""
+    """执行搜索记忆 - v2.0 混合检索（支持channel隔离）"""
     query = args.get("query", "")
     limit = args.get("limit", 5)
+    channel = args.get("channel", "deepseek")
 
     if not query:
-        recent = await get_recent_conversations("dream", limit)
+        recent = await get_recent_conversations("dream", limit, channel=channel)
         return format_conversations_result(recent, "最近的对话")
 
     # 使用混合检索
-    print(f"[MCP] Using hybrid search for: {query}")
+    print(f"[MCP] Using hybrid search for: {query} (channel={channel})")
     try:
         results = await hybrid_search(
             query=query,
             scene_type="daily",  # MCP调用默认搜全部
             synonym_service=_synonym_service,
-            limit=limit
+            limit=limit,
+            channel=channel
         )
         if results:
             return format_hybrid_result(results, query)
@@ -397,18 +409,19 @@ async def execute_search_memory(args: dict) -> dict:
 
     # Fallback: 关键词搜索
     print(f"[MCP] Fallback to keyword search for: {query}")
-    results = await search_conversations(query, "dream", limit)
+    results = await search_conversations(query, "dream", limit, channel=channel)
     return format_conversations_result(results, f"关于'{query}'的记忆")
 
 
 async def execute_init_context(args: dict) -> dict:
-    """执行冷启动上下文加载 - 返回带标签的摘要+最近对话"""
+    """执行冷启动上下文加载 - 返回带标签的摘要+最近对话（支持channel隔离）"""
     limit = args.get("limit", 4)
+    channel = args.get("channel", "deepseek")
 
     lines = []
 
     # 1. 获取最近的摘要（前文回顾）
-    summaries = await get_recent_summaries("dream", 3)
+    summaries = await get_recent_summaries("dream", 3, channel=channel)
     if summaries:
         lines.append("【前文回顾】以下是之前对话的摘要（仅供参考）：")
         lines.append("")
@@ -421,7 +434,7 @@ async def execute_init_context(args: dict) -> dict:
         lines.append("")
 
     # 2. 获取最近4轮原文
-    recent = await get_recent_conversations("dream", limit)
+    recent = await get_recent_conversations("dream", limit, channel=channel)
 
     if recent:
         lines.append("【最近对话】以下是最近的对话原文：")
