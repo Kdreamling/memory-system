@@ -172,6 +172,20 @@ BACKENDS = {
         "model_name": "anthropic/claude-opus-4.6",
         "extra_headers": {"HTTP-Referer": "https://memory-system.local", "X-Title": "Memory Gateway"}
     },
+    
+        # ===== DZZI 中转通道（Claude API）=====
+    # 0.1 计费
+    "claude-opus-4.6-dzzi": {
+        "base_url": "https://api.dzzi.ai/v1",
+        "api_key": settings.dzzi_api_key,
+        "model_name": "[0.1]claude-opus-4-6-thinking"
+    },
+    # 按次计费
+    "claude-opus-4.6-dzzi-peruse": {
+        "base_url": "https://api.dzzi.ai/v1",
+        "api_key": settings.dzzi_per_use_api_key,
+        "model_name": "[按次]claude-opus-4-6-thinking"
+    },
 }
 
 MODEL_ALIASES = {
@@ -197,6 +211,9 @@ MODEL_ALIASES = {
     "deepseek": "deepseek-chat",
     "deepseek-chat": "deepseek-chat",
     "deepseek-reasoner": "deepseek-reasoner",
+        # DZZI 中转
+    "claude-dzzi": "claude-opus-4-6-dzzi",
+    "claude-dzzi-peruse": "claude-opus-4-6-dzzi-peruse",
 }
 
 # ============ 过滤关键词 ============
