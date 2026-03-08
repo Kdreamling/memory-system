@@ -11,20 +11,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from auth import auth_required
-from config import get_settings
-
-# ---- Supabase 客户端 ----
-
-from supabase import create_client
-
-_supabase = None
-
-def get_supabase():
-    global _supabase
-    if _supabase is None:
-        s = get_settings()
-        _supabase = create_client(s.supabase_url, s.supabase_key)
-    return _supabase
+from config import get_settings, get_supabase
 
 
 # ---- 请求/响应模型 ----

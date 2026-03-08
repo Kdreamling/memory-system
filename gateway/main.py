@@ -4,15 +4,19 @@ Memory Gateway - 多后端代理网关
 v2.2 - 场景检测 + 混合检索 + pgvector + 自动注入
 """
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 from contextlib import asynccontextmanager
 import httpx
 import json
 import asyncio
+import logging
+import os
+import re
 from typing import AsyncGenerator, Optional
 from datetime import datetime
+from pydantic import BaseModel
 
 import sys
 sys.path.insert(0, '/home/dream/memory-system/gateway')
@@ -23,10 +27,18 @@ from services.pgvector_service import store_conversation_embedding
 from services.scene_detector import SceneDetector
 from services.synonym_service import SynonymService
 from services.auto_inject import AutoInject
-import re
 from routers.mcp_tools import router as mcp_router, set_synonym_service
 
+# ---- Reverie 新模块 ----
+from auth import create_token, auth_required
+from sessions import router as sessions_router, update_session_stats
+from channels import get_channels, resolve_channel, get_model_list, MODEL_ALIASES as _CHANNEL_MODEL_ALIASES
+from adapters import ThinkingAdapter
+from memory_cycle import setup_scheduler, realtime_micro_summary
+from context_builder import build_context
+
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 # ============ v2 全局服务实例 ============
 scene_detector = SceneDetector()
@@ -216,6 +228,13 @@ MODEL_ALIASES = {
     "claude-dzzi-peruse": "claude-opus-4-6-dzzi-peruse",
 }
 
+# ---- Reverie 功能降级开关 ----
+FEATURE_FLAGS = {
+    "memory_enabled": True,
+    "micro_summary_enabled": True,
+    "context_inject_enabled": True,
+}
+
 # ============ 过滤关键词 ============
 
 SYSTEM_KEYWORDS = [
@@ -300,11 +319,32 @@ async def lifespan(app: FastAPI):
         print(f"[v2] Warning: Synonym service failed to load: {e}")
     print("[v2] Scene detector ready")
     print("[v2] Auto-inject ready")
+    # ---- Reverie 定时任务 ----
+    try:
+        setup_scheduler()
+        print("[Reverie] Scheduler started")
+    except Exception as e:
+        print(f"[Reverie] Warning: Scheduler failed to start: {e}")
     yield
     print("Gateway shutdown complete")
 
-app = FastAPI(title="Memory Gateway", lifespan=lifespan)
+app = FastAPI(
+    title="Reverie Gateway",
+    docs_url=None if os.getenv("ENV") == "prod" else "/hidden-docs",
+    redoc_url=None,
+    lifespan=lifespan,
+)
 app.include_router(mcp_router)
+app.include_router(sessions_router)
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    return create_token(req.password)
+
 
 @app.get("/health")
 async def health_check():
@@ -326,12 +366,19 @@ async def list_models():
     return {"models": list(BACKENDS.keys()), "aliases": MODEL_ALIASES}
 
 @app.post("/v1/chat/completions")
-async def proxy_chat_completions(request: Request):
+async def proxy_chat_completions(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
+    session_id = request.headers.get("X-Session-Id")
+
+    # ========== Reverie 新流程 ==========
+    if session_id:
+        return await _reverie_chat(body, session_id, request, background_tasks)
+
+    # ========== Kelivo 旧流程（以下完全不动）==========
     requested_model = body.get("model", "deepseek-chat")
     backend = get_backend_config(requested_model)
 
@@ -396,6 +443,175 @@ async def proxy_chat_completions(request: Request):
         )
     else:
         return await non_stream_request(target_url, headers, body, user_msg, current_scene, channel)
+
+# ============ Reverie 新流程 ============
+
+async def _reverie_chat(body: dict, session_id: str, request: Request, background_tasks: BackgroundTasks):
+    """Reverie 新流程：JWT鉴权 → 上下文构建 → 通道路由 → 流式转发 → 异步存储"""
+
+    # 1. JWT 鉴权
+    from auth import verify_token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Authorization")
+    verify_token(auth_header.replace("Bearer ", ""))
+
+    # 2. 解析请求
+    model_name = body.get("model", "deepseek-chat")
+    messages = body.get("messages", [])
+    stream = body.get("stream", True)
+    user_input = messages[-1]["content"] if messages else ""
+
+    # 3. 上下文构建（如果启用）
+    if FEATURE_FLAGS.get("context_inject_enabled") and messages:
+        try:
+            context = await build_context(session_id, user_input)
+            # context 是 [{"role": "system", "content": "..."}]，插到 messages 最前面
+            messages = context + messages
+        except Exception as e:
+            logger.warning(f"[reverie] context build failed: {e}")
+
+    # 4. 通道路由
+    ch_name, ch_config, resolved_model = resolve_channel(model_name)
+
+    # 5. 组装上游请求头
+    headers = {
+        "Authorization": f"Bearer {ch_config['api_key']}",
+        "Content-Type": "application/json",
+    }
+    if ch_config.get("provider") == "openrouter":
+        headers["HTTP-Referer"] = "https://kdreamling.work"
+        headers["X-Title"] = "Reverie"
+
+    upstream_body = {
+        "model": resolved_model,
+        "messages": messages,
+        "stream": stream,
+    }
+
+    timeout = get_timeout(resolved_model)
+
+    logger.info(f"[reverie] session={session_id} model={model_name} -> ch={ch_name}/{resolved_model} stream={stream}")
+
+    if stream:
+        return StreamingResponse(
+            _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks),
+            media_type="text/event-stream",
+        )
+    else:
+        proxy = get_proxy(ch_config["base_url"])
+        async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
+            resp = await client.post(
+                f"{ch_config['base_url']}/chat/completions",
+                headers=headers,
+                json=upstream_body,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        assistant_msg = ""
+        try:
+            assistant_msg = data["choices"][0]["message"].get("content", "") or ""
+        except Exception:
+            pass
+
+        background_tasks.add_task(_reverie_store, session_id, user_input, assistant_msg, "daily")
+        return JSONResponse(content=data)
+
+
+async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks):
+    """Reverie 流式处理：适配器统一格式 + 收集完整回复 + 异步存储"""
+    adapter = ThinkingAdapter()
+    thinking_buffer = []
+    text_buffer = []
+
+    thinking_format = ch_config.get("thinking_format")
+    proxy = get_proxy(ch_config["base_url"])
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
+            async with client.stream(
+                "POST",
+                f"{ch_config['base_url']}/chat/completions",
+                headers=headers,
+                json=upstream_body,
+            ) as response:
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if thinking_format:
+                        unified = adapter.adapt(chunk, thinking_format)
+                        if unified:
+                            if unified["type"] == "thinking_delta":
+                                thinking_buffer.append(unified.get("content", ""))
+                            elif unified["type"] == "text_delta":
+                                text_buffer.append(unified.get("content", ""))
+                            yield f"data: {json.dumps(unified, ensure_ascii=False)}\n\n"
+                    else:
+                        # 不支持 thinking 的模型，直接提取 content
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            text_buffer.append(content)
+                            yield f'data: {{"type":"text_delta","content":{json.dumps(content, ensure_ascii=False)}}}\n\n'
+
+        yield f'data: {{"type":"done"}}\n\n'
+
+    except Exception as e:
+        logger.error(f"[reverie] stream error: {e}")
+        yield f'data: {{"type":"error","content":"{str(e)}"}}\n\n'
+
+    # 流结束后触发异步存储
+    assistant_msg = "".join(text_buffer)
+    if assistant_msg or thinking_buffer:
+        background_tasks.add_task(
+            _reverie_store, session_id, user_input, assistant_msg, "daily", "".join(thinking_buffer)
+        )
+
+
+async def _reverie_store(session_id: str, user_msg: str, assistant_msg: str, scene_type: str, thinking: str = ""):
+    """Reverie 消息存储 + 微摘要触发"""
+    try:
+        from config import get_supabase
+        sb = get_supabase()
+
+        from datetime import timezone as _tz
+        now_str = datetime.now(_tz.utc).isoformat()
+
+        record = {
+            "session_id": session_id,
+            "user_id": "dream",
+            "user_msg": user_msg,
+            "assistant_msg": assistant_msg,
+            "scene_type": scene_type,
+            "thinking_summary": thinking[:500] if thinking else None,
+            "created_at": now_str,
+        }
+
+        sb.table("conversations").insert(record).execute()
+
+        # 更新 session 统计
+        await update_session_stats(session_id)
+
+        # 触发微摘要
+        if FEATURE_FLAGS.get("micro_summary_enabled") and user_msg and assistant_msg:
+            try:
+                await realtime_micro_summary(user_msg, assistant_msg, scene_type)
+            except Exception as e:
+                logger.warning(f"[reverie] micro_summary failed: {e}")
+
+    except Exception as e:
+        logger.error(f"[reverie] store failed: {e}")
+
 
 # ============ 假流式处理 ============
 

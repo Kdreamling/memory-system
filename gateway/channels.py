@@ -29,19 +29,33 @@ def get_channels() -> dict:
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key": s.openrouter_api_key,
-            "models": ["anthropic/claude-sonnet-4", "anthropic/claude-opus-4"],
+            "models": [
+                "anthropic/claude-opus-4-20250514",
+            ],
             "supports_thinking": True,
             "thinking_format": "openai",
+        },
+        "gcli2api": {
+            "provider": "openai_compatible",
+            "base_url": "http://localhost:7861/v1",
+            "api_key": "not-needed",
+            "models": ["gemini-2.5-pro"],
+            "supports_thinking": False,
+            "thinking_format": None,
+            "fake_stream": True,
         },
     }
 
 
 # 模型别名 — 简写映射
 MODEL_ALIASES = {
-    "claude": "claude-sonnet-4-20250514",
+    "opus": "anthropic/claude-opus-4-20250514",
+    "claude": "anthropic/claude-opus-4-20250514",
     "sonnet": "claude-sonnet-4-20250514",
     "deepseek": "deepseek-chat",
     "ds": "deepseek-chat",
+    "reasoner": "deepseek-reasoner",
+    "gemini": "gemini-2.5-pro",
 }
 
 

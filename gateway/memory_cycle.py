@@ -10,19 +10,9 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from config import get_settings
-from supabase import create_client
+from config import get_settings, get_supabase
 
 logger = logging.getLogger(__name__)
-
-_supabase = None
-
-def get_supabase():
-    global _supabase
-    if _supabase is None:
-        s = get_settings()
-        _supabase = create_client(s.supabase_url, s.supabase_key)
-    return _supabase
 
 
 # ---- 实时微摘要（核心机制）----

@@ -10,18 +10,7 @@ import math
 import asyncio
 from datetime import datetime, timezone, timedelta
 
-from config import get_settings
-
-from supabase import create_client
-
-_supabase = None
-
-def get_supabase():
-    global _supabase
-    if _supabase is None:
-        s = get_settings()
-        _supabase = create_client(s.supabase_url, s.supabase_key)
-    return _supabase
+from config import get_settings, get_supabase
 
 
 TOKEN_BUDGET = 2500

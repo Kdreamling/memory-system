@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     jwt_expire_days: int = 7
 
+    # 环境标识
+    env: str = "dev"             # dev / prod
+
     class Config:
         env_file = "/home/dream/memory-system/.env"
         env_file_encoding = "utf-8"
@@ -81,3 +84,18 @@ def get_llm_config():
         "base_url": s.llm_base_url,
         "model": s.llm_model,
     }
+
+
+# ---- 共享 Supabase 客户端 ----
+
+_supabase_client = None
+
+
+def get_supabase():
+    """全局共享的 Supabase 客户端"""
+    global _supabase_client
+    if _supabase_client is None:
+        s = get_settings()
+        from supabase import create_client
+        _supabase_client = create_client(s.supabase_url, s.supabase_key)
+    return _supabase_client
