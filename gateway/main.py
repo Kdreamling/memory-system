@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from typing import AsyncGenerator, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel
 
 import sys
@@ -513,6 +513,21 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
 
     # 4. 通道路由
     ch_name, ch_config, resolved_model = resolve_channel(model_name)
+
+    # 4.5 如果模型变了，更新 session 记录
+    try:
+        from config import get_supabase
+        session_result = get_supabase().table("sessions").select("model").eq("id", session_id).execute()
+        if session_result.data:
+            stored_model = session_result.data[0].get("model")
+            if stored_model != model_name:
+                get_supabase().table("sessions").update({
+                    "model": model_name,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }).eq("id", session_id).execute()
+                logger.info(f"[reverie] session model updated: {stored_model} -> {model_name}")
+    except Exception as e:
+        logger.warning(f"[reverie] update session model failed: {e}")
 
     # 5. 组装上游请求头
     headers = {
