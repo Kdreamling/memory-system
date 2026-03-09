@@ -525,6 +525,7 @@ async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id
     thinking_buffer = []
     text_buffer = []
 
+    supports_thinking = ch_config.get("supports_thinking", False)
     thinking_format = ch_config.get("thinking_format")
     proxy = get_proxy(ch_config["base_url"])
 
@@ -548,14 +549,14 @@ async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id
                     except json.JSONDecodeError:
                         continue
 
-                    if thinking_format:
-                        unified = adapter.adapt(chunk, thinking_format)
-                        if unified:
-                            if unified["type"] == "thinking_delta":
-                                thinking_buffer.append(unified.get("content", ""))
-                            elif unified["type"] == "text_delta":
-                                text_buffer.append(unified.get("content", ""))
-                            yield f"data: {json.dumps(unified, ensure_ascii=False)}\n\n"
+                    if supports_thinking and thinking_format:
+                        events = adapter.adapt(chunk, thinking_format)
+                        for event in events:
+                            if event["type"] == "thinking_delta":
+                                thinking_buffer.append(event.get("content", ""))
+                            elif event["type"] == "text_delta":
+                                text_buffer.append(event.get("content", ""))
+                            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                     else:
                         # 不支持 thinking 的模型，直接提取 content
                         delta = chunk.get("choices", [{}])[0].get("delta", {})
