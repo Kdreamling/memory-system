@@ -263,8 +263,12 @@ async def build_context(session_id: str, user_input: str) -> list:
             context_parts.append(clipped)
 
     # 组装
+    beijing_tz = timezone(timedelta(hours=8))
+    now_beijing = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M（北京时间）")
+    time_line = f"当前时间：{now_beijing}"
+
     if context_parts:
-        full_context = "\n\n---\n\n".join(context_parts)
+        full_context = time_line + "\n\n---\n\n" + "\n\n---\n\n".join(context_parts)
         return [{"role": "system", "content": full_context}]
     else:
-        return []
+        return [{"role": "system", "content": time_line}]

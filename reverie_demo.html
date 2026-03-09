@@ -358,7 +358,8 @@
   <select id="model-select">
     <option value="deepseek-chat">deepseek-chat</option>
     <option value="deepseek-reasoner">deepseek-reasoner</option>
-    <option value="anthropic/claude-opus-4-20250514">claude-opus-4</option>
+    <option value="[0.1]claude-opus-4-6-thinking">claude-opus-4.6 (dzzi)</option>
+    <option value="anthropic/claude-opus-4.6">claude-opus-4.6 (openrouter)</option>
   </select>
   <span id="auth-status">未登录</span>
 </div>
@@ -504,7 +505,7 @@
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ scene }),
+        body: JSON.stringify({ scene_type: scene }),
       });
       if (res.status === 401) { handleUnauth(); return; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -525,7 +526,7 @@
     }
     sessionList.innerHTML = sessions.map(s => {
       const id = s.session_id || s.id || '?';
-      const scene = s.scene || s.scenario || 'unknown';
+      const scene = s.scene_type || 'daily';
       const ts = s.created_at ? new Date(s.created_at).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
       const active = id === currentSessionId ? 'active' : '';
       return `<div class="session-item ${active}" data-id="${id}" data-scene="${scene}">
@@ -548,14 +549,74 @@
     currentSessionIdEl.textContent = currentSessionId;
     msgInput.disabled = false;
     btnSend.disabled = false;
+    // 如果 session 有记录的 model，同步到顶栏下拉框
+    if (sess.model) {
+      const opt = modelSelect.querySelector(`option[value="${CSS.escape(sess.model)}"]`);
+      if (opt) modelSelect.value = sess.model;
+    }
     // Clear messages
     messagesEl.innerHTML = '';
     emptyHint && emptyHint.remove();
     renderSessionList();
+    loadMessages(currentSessionId);
     msgInput.focus();
   }
 
   btnNewSession.addEventListener('click', createSession);
+
+  // ── 历史消息加载 ──
+  async function loadMessages(sessionId) {
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/messages`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (res.status === 401) { handleUnauth(); return; }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const msgs = (data.messages || []).slice().reverse(); // 后端倒序，渲染需要正序
+      for (const m of msgs) {
+        if (m.user_msg) appendUserMsg(m.user_msg);
+        if (m.assistant_msg) appendHistoryAssistantMsg(m.assistant_msg, m.thinking_summary || '');
+      }
+    } catch (e) {
+      toast('历史消息加载失败：' + e.message, 'error');
+    }
+  }
+
+  function appendHistoryAssistantMsg(text, thinkingSummary) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg assistant';
+
+    if (thinkingSummary) {
+      const thinkingWrapper = document.createElement('div');
+      thinkingWrapper.className = 'thinking-wrapper';
+
+      const toggle = document.createElement('div');
+      toggle.className = 'thinking-toggle collapsed';
+      toggle.innerHTML = '<span class="arrow">▼</span> 思考过程';
+
+      const content = document.createElement('div');
+      content.className = 'thinking-content hidden';
+      content.textContent = thinkingSummary;
+
+      toggle.addEventListener('click', () => {
+        toggle.classList.toggle('collapsed');
+        content.classList.toggle('hidden');
+      });
+
+      thinkingWrapper.appendChild(toggle);
+      thinkingWrapper.appendChild(content);
+      wrapper.appendChild(thinkingWrapper);
+    }
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.textContent = text;
+    wrapper.appendChild(bubble);
+
+    messagesEl.appendChild(wrapper);
+    scrollBottom();
+  }
 
   // ── Input auto-resize ──
   msgInput.addEventListener('input', () => {
