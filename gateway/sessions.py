@@ -18,7 +18,7 @@ from config import get_settings, get_supabase
 
 class CreateSessionRequest(BaseModel):
     scene_type: Optional[str] = None  # 不传则继承上一个会话的场景
-    model: Optional[str] = "claude-sonnet-4-20250514"
+    model: Optional[str] = "deepseek-chat"
     title: Optional[str] = None
 
 class UpdateSessionRequest(BaseModel):

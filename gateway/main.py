@@ -471,6 +471,46 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
         except Exception as e:
             logger.warning(f"[reverie] context build failed: {e}")
 
+    # 3.5 拉取历史对话（滑动窗口，按 token 预算截取）
+    MAX_HISTORY_TOKENS = 8000
+    history_messages = []
+    try:
+        from config import get_supabase
+        history_result = get_supabase().table("conversations") \
+            .select("user_msg, assistant_msg") \
+            .eq("session_id", session_id) \
+            .order("created_at", desc=False) \
+            .limit(50) \
+            .execute()
+        history_rows = history_result.data or []
+
+        all_history = []
+        for row in history_rows:
+            if row.get("user_msg"):
+                all_history.append({"role": "user", "content": row["user_msg"]})
+            if row.get("assistant_msg"):
+                all_history.append({"role": "assistant", "content": row["assistant_msg"]})
+
+        # 从末尾往前累计 token 数，超预算时截断
+        used_tokens = 0
+        cutoff = 0
+        for i in range(len(all_history) - 1, -1, -1):
+            text = all_history[i]["content"]
+            chinese = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+            tokens = int(chinese / 1.5 + (len(text) - chinese) / 4)
+            if used_tokens + tokens > MAX_HISTORY_TOKENS:
+                cutoff = i + 1
+                break
+            used_tokens += tokens
+
+        history_messages = all_history[cutoff:]
+        logger.info(f"[reverie] history: {len(history_messages)} messages, trimmed to fit {MAX_HISTORY_TOKENS} tokens")
+    except Exception as e:
+        logger.warning(f"[reverie] history fetch failed: {e}")
+
+    # 拼装最终 messages：context（可选）+ history + current user message
+    messages = messages[:-1] + history_messages + [messages[-1]]
+
     # 4. 通道路由
     ch_name, ch_config, resolved_model = resolve_channel(model_name)
 

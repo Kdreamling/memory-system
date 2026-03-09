@@ -150,6 +150,7 @@
     #session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
     .session-item {
+      position: relative;
       padding: 8px 10px;
       border-radius: 6px;
       cursor: pointer;
@@ -162,6 +163,19 @@
       background: rgba(76, 110, 245, 0.15);
       border-color: rgba(76, 110, 245, 0.4);
     }
+    .s-delete {
+      position: absolute;
+      top: 6px;
+      right: 8px;
+      font-size: 16px;
+      color: var(--text-dim);
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s;
+      line-height: 1;
+    }
+    .session-item:hover .s-delete { opacity: 1; }
+    .s-delete:hover { color: var(--danger); }
     .session-item .s-id {
       font-size: 11px;
       color: var(--text-dim);
@@ -505,7 +519,7 @@
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ scene_type: scene }),
+        body: JSON.stringify({ scene_type: scene, model: modelSelect.value }),
       });
       if (res.status === 401) { handleUnauth(); return; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -530,6 +544,7 @@
       const ts = s.created_at ? new Date(s.created_at).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
       const active = id === currentSessionId ? 'active' : '';
       return `<div class="session-item ${active}" data-id="${id}" data-scene="${scene}">
+        <span class="s-delete" data-id="${id}" title="删除">&times;</span>
         <div class="s-scene">${scene}</div>
         <div class="s-id">${id.slice(0,16)}…</div>
         ${ts ? `<div class="s-time">${ts}</div>` : ''}
@@ -540,6 +555,34 @@
       el.addEventListener('click', () => {
         const s = sessions.find(x => (x.session_id || x.id) === el.dataset.id);
         if (s) selectSession(s);
+      });
+    });
+
+    sessionList.querySelectorAll('.s-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        if (!confirm('确定删除这个 session 吗？')) return;
+        try {
+          const res = await fetch(`/api/sessions/${id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` },
+          });
+          if (res.status === 401) { handleUnauth(); return; }
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          sessions = sessions.filter(s => (s.session_id || s.id) !== id);
+          if (currentSessionId === id) {
+            currentSessionId = null;
+            currentSessionIdEl.textContent = '—';
+            messagesEl.innerHTML = '';
+            msgInput.disabled = true;
+            btnSend.disabled = true;
+          }
+          renderSessionList();
+          toast('Session 已删除', 'success');
+        } catch (e) {
+          toast('删除失败：' + e.message, 'error');
+        }
       });
     });
   }
