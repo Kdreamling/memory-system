@@ -32,6 +32,7 @@ from routers.mcp_tools import router as mcp_router, set_synonym_service
 # ---- Reverie 新模块 ----
 from auth import create_token, auth_required
 from sessions import router as sessions_router, update_session_stats
+from memories import router as memories_router
 from channels import get_channels, resolve_channel, get_model_list, MODEL_ALIASES as _CHANNEL_MODEL_ALIASES
 from adapters import ThinkingAdapter
 from memory_cycle import setup_scheduler, realtime_micro_summary
@@ -336,6 +337,7 @@ app = FastAPI(
 )
 app.include_router(mcp_router)
 app.include_router(sessions_router)
+app.include_router(memories_router)
 
 class LoginRequest(BaseModel):
     password: str
