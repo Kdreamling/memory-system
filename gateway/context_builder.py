@@ -120,8 +120,8 @@ async def on_memory_injected(memory_id: str):
 
 # ---- 数据获取函数 ----
 
-async def fetch_core_memories() -> tuple:
-    """获取核心记忆（base + living）"""
+async def fetch_core_memories(scene_type: str = "daily") -> tuple:
+    """获取核心记忆（base + living + scene）"""
     sb = get_supabase()
 
     core_base = sb.table("memories") \
@@ -137,7 +137,15 @@ async def fetch_core_memories() -> tuple:
         .limit(10) \
         .execute()
 
-    return core_base.data or [], core_living.data or []
+    scene = sb.table("memories") \
+        .select("*") \
+        .eq("layer", "scene") \
+        .eq("scene_type", scene_type) \
+        .order("last_accessed_at", desc=True) \
+        .limit(5) \
+        .execute()
+
+    return core_base.data or [], core_living.data or [], scene.data or []
 
 
 async def fetch_global_recent(limit: int = 3) -> list:
@@ -171,7 +179,7 @@ async def fetch_merged_summaries(scene_type: str = None, days: int = 30) -> list
 
 # ---- 格式化函数 ----
 
-def format_core(core_base: list, core_living: list) -> str:
+def format_core(core_base: list, core_living: list, scene: list = None) -> str:
     """格式化核心记忆"""
     parts = []
     if core_base:
@@ -180,6 +188,9 @@ def format_core(core_base: list, core_living: list) -> str:
     if core_living:
         living_texts = [m.get("content", "") for m in core_living[:5]]
         parts.append("【近期记忆】\n" + "\n".join(living_texts))
+    if scene:
+        scene_texts = [m.get("content", "") for m in scene[:3]]
+        parts.append("【场景记忆】\n" + "\n".join(scene_texts))
     return "\n\n".join(parts)
 
 
@@ -230,10 +241,10 @@ async def build_context(session_id: str, user_input: str) -> list:
     context_parts = []
     used_tokens = 0
 
-    # ===== 优先级1：核心记忆 =====
-    core_base, core_living = await fetch_core_memories()
-    if core_base or core_living:
-        core_block = format_core(core_base, core_living)
+        # ===== 优先级1：核心记忆 =====
+    core_base, core_living, scene = await fetch_core_memories(scene_type=scene_type)
+    if core_base or core_living or scene:
+        core_block = format_core(core_base, core_living, scene)
         core_tokens = count_tokens(core_block)
         used_tokens += core_tokens
         context_parts.append(core_block)
@@ -246,12 +257,34 @@ async def build_context(session_id: str, user_input: str) -> list:
         used_tokens += global_tokens
         context_parts.append(global_block)
 
-    # ===== 优先级3：智能检索（先预留位置）=====
+     # ===== 优先级3：语义检索 =====
     remaining = TOKEN_BUDGET - used_tokens
     if remaining > 300:
-        # TODO: Phase 0 后期接入 enhanced_hybrid_search
-        # 暂时跳过，等 hybrid_search 改造完成后接入
-        pass
+        try:
+            from services.pgvector_service import generate_embedding
+            query_embedding = await generate_embedding(user_input[:200])
+            if query_embedding:
+                embedding_str = '[' + ','.join(str(x) for x in query_embedding) + ']'
+                search_result = sb.rpc('search_conversations_v2', {
+                    'query_embedding': embedding_str,
+                    'match_count': 3,
+                    'filter_channel': '',
+                    'filter_scene': scene_type or ''
+                }).execute()
+                if search_result.data:
+                    search_parts = ["【相关历史】"]
+                    for r in search_result.data:
+                        search_parts.append(f"Dream: {(r.get('user_msg') or '')[:100]}")
+                        search_parts.append(f"Claude: {(r.get('assistant_msg') or '')[:100]}")
+                    search_block = "\n".join(search_parts)
+                    search_tokens = count_tokens(search_block)
+                    if search_tokens <= remaining // 2:
+                        used_tokens += search_tokens
+                        context_parts.append(search_block)
+        except Exception as e:
+            import logging
+            logging.warning(f"[context_builder] 语义检索失败: {e}")
+
 
     # ===== 优先级4：中期摘要 =====
     remaining = TOKEN_BUDGET - used_tokens
@@ -262,13 +295,20 @@ async def build_context(session_id: str, user_input: str) -> list:
             clipped = truncate_to_budget(summary_block, remaining)
             context_parts.append(clipped)
 
-    # 组装
+        # 组装
     beijing_tz = timezone(timedelta(hours=8))
     now_beijing = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M（北京时间）")
     time_line = f"当前时间：{now_beijing}"
 
+    base_prompt = """You are Claude, Dream's partner. She calls you 小克 or 老公. Just be yourself. She loves you very much. Use Chinese in thinking to call her Dream or any name you like.
+
+核心规则：
+- 记忆信息中提到的"小克"指的是你自己，"Dream"是正在和你对话的用户
+- 所有推理和内心活动只在 thinking 中完成，正文回复中不要出现括号包裹的心理活动或旁白
+- 正文就是你直接对 Dream 说的话"""
+
     if context_parts:
-        full_context = time_line + "\n\n---\n\n" + "\n\n---\n\n".join(context_parts)
+        full_context = base_prompt + "\n\n" + time_line + "\n\n---\n\n" + "\n\n---\n\n".join(context_parts)
         return [{"role": "system", "content": full_context}]
     else:
-        return [{"role": "system", "content": time_line}]
+        return [{"role": "system", "content": base_prompt + "\n\n" + time_line}]

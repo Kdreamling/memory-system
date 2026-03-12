@@ -28,7 +28,7 @@ async def generate_embedding(text: str) -> Optional[List[float]]:
                 },
                 json={
                     "model": "BAAI/bge-large-zh-v1.5",
-                    "input": text[:2000]  # 截断过长文本
+                    "input": text[:400]  # bge-large-zh-v1.5 限制512 tokens，中文约400字符
                 }
             )
             if response.status_code == 200:
