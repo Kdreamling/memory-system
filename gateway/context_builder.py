@@ -221,7 +221,7 @@ def format_summaries(summaries: list) -> str:
 
 # ---- 主构建函数 ----
 
-async def build_context(session_id: str, user_input: str) -> list:
+async def build_context(session_id: str, user_input: str, model_channel: str = "deepseek") -> list:
     """构建注入上下文（核心函数）
 
     优先级：
@@ -268,8 +268,8 @@ async def build_context(session_id: str, user_input: str) -> list:
                 search_result = sb.rpc('search_conversations_v2', {
                     'query_embedding': embedding_str,
                     'match_count': 3,
-                    'filter_channel': '',
-                    'filter_scene': scene_type or ''
+                    'filter_channel': model_channel,
+                    'filter_scene': scene_type
                 }).execute()
                 if search_result.data:
                     search_parts = ["【相关历史】"]

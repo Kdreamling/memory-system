@@ -467,7 +467,7 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
     # 3. 上下文构建（如果启用）
     if FEATURE_FLAGS.get("context_inject_enabled") and messages:
         try:
-            context = await build_context(session_id, user_input)
+            context = await build_context(session_id, user_input, model_channel)
             # context 是 [{"role": "system", "content": "..."}]，插到 messages 最前面
             messages = context + messages
         except Exception as e:
