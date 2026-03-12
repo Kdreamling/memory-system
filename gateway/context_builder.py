@@ -8,6 +8,7 @@
 
 import math
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 
 from config import get_settings, get_supabase
@@ -282,7 +283,6 @@ async def build_context(session_id: str, user_input: str, model_channel: str = "
                         used_tokens += search_tokens
                         context_parts.append(search_block)
         except Exception as e:
-            import logging
             logging.warning(f"[context_builder] 语义检索失败: {e}")
 
 
