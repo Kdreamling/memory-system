@@ -463,6 +463,7 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
     messages = body.get("messages", [])
     stream = body.get("stream", True)
     user_input = messages[-1]["content"] if messages else ""
+    model_channel, _, _ = resolve_channel(model_name)
 
     # 3. 上下文构建（如果启用）
     if FEATURE_FLAGS.get("context_inject_enabled") and messages:
