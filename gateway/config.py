@@ -66,7 +66,7 @@ def get_settings() -> Settings:
 FEATURE_FLAGS = {
     "memory_enabled": True,
     "micro_summary_enabled": True,
-    "search_enabled": True,
+    "search_enabled": False,        # 语义检索：暂时关闭，噪点过多待优化后重开
     "context_inject_enabled": True,
 }
 

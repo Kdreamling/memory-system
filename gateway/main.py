@@ -465,6 +465,16 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
     user_input = messages[-1]["content"] if messages else ""
     model_channel, _, _ = resolve_channel(model_name)
 
+    # 获取 session 的真实 scene_type（用于存储，避免硬编码 "daily"）
+    session_scene_type = "daily"
+    try:
+        from config import get_supabase
+        _sr = get_supabase().table("sessions").select("scene_type").eq("id", session_id).execute()
+        if _sr.data:
+            session_scene_type = _sr.data[0].get("scene_type") or "daily"
+    except Exception as _e:
+        logger.warning(f"[reverie] fetch scene_type failed: {_e}")
+
     # 3. 上下文构建（如果启用）
     if FEATURE_FLAGS.get("context_inject_enabled") and messages:
         try:
@@ -553,7 +563,7 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
 
     if stream:
         return StreamingResponse(
-            _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks),
+            _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks, model_channel, session_scene_type),
             media_type="text/event-stream",
         )
     else:
@@ -573,11 +583,11 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
         except Exception:
             pass
 
-        background_tasks.add_task(_reverie_store, session_id, user_input, assistant_msg, "daily")
+        background_tasks.add_task(_reverie_store, session_id, user_input, assistant_msg, session_scene_type, "", model_channel)
         return JSONResponse(content=data)
 
 
-async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks):
+async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks, model_channel="deepseek", scene_type="daily"):
     """Reverie 流式处理：适配器统一格式 + 收集完整回复 + 异步存储"""
     adapter = ThinkingAdapter()
     thinking_buffer = []
@@ -633,11 +643,11 @@ async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id
     assistant_msg = "".join(text_buffer)
     if assistant_msg or thinking_buffer:
         background_tasks.add_task(
-            _reverie_store, session_id, user_input, assistant_msg, "daily", "".join(thinking_buffer)
+            _reverie_store, session_id, user_input, assistant_msg, scene_type, "".join(thinking_buffer), model_channel
         )
 
 
-async def _reverie_store(session_id: str, user_msg: str, assistant_msg: str, scene_type: str, thinking: str = ""):
+async def _reverie_store(session_id: str, user_msg: str, assistant_msg: str, scene_type: str, thinking: str = "", model_channel: str = "deepseek"):
     """Reverie 消息存储 + 微摘要触发"""
     try:
         from config import get_supabase
@@ -652,6 +662,7 @@ async def _reverie_store(session_id: str, user_msg: str, assistant_msg: str, sce
             "user_msg": user_msg,
             "assistant_msg": assistant_msg,
             "scene_type": scene_type,
+            "model_channel": model_channel,
             "thinking_summary": thinking[:500] if thinking else None,
             "created_at": now_str,
         }

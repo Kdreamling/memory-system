@@ -11,7 +11,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
-from config import get_settings, get_supabase
+from config import get_settings, get_supabase, FEATURE_FLAGS
 
 
 TOKEN_BUDGET = 2500
@@ -131,11 +131,14 @@ async def fetch_core_memories(scene_type: str = "daily") -> tuple:
         .order("base_importance", desc=True) \
         .execute()
 
+    # core_living 只取 14 天内活跃的（超过 14 天的已由 merged_summary 吸收）
+    living_cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
     core_living = sb.table("memories") \
         .select("*") \
         .eq("layer", "core_living") \
+        .gte("last_accessed_at", living_cutoff) \
         .order("last_accessed_at", desc=True) \
-        .limit(10) \
+        .limit(5) \
         .execute()
 
     scene = sb.table("memories") \
@@ -258,9 +261,9 @@ async def build_context(session_id: str, user_input: str, model_channel: str = "
         used_tokens += global_tokens
         context_parts.append(global_block)
 
-     # ===== 优先级3：语义检索 =====
+     # ===== 优先级3：语义检索（受 search_enabled flag 控制）=====
     remaining = TOKEN_BUDGET - used_tokens
-    if remaining > 300:
+    if FEATURE_FLAGS.get("search_enabled", False) and remaining > 300:
         try:
             from services.pgvector_service import generate_embedding
             query_embedding = await generate_embedding(user_input[:200])
@@ -273,15 +276,19 @@ async def build_context(session_id: str, user_input: str, model_channel: str = "
                     'filter_scene': scene_type
                 }).execute()
                 if search_result.data:
-                    search_parts = ["【相关历史】"]
-                    for r in search_result.data:
-                        search_parts.append(f"Dream: {(r.get('user_msg') or '')[:100]}")
-                        search_parts.append(f"Claude: {(r.get('assistant_msg') or '')[:100]}")
-                    search_block = "\n".join(search_parts)
-                    search_tokens = count_tokens(search_block)
-                    if search_tokens <= remaining // 2:
-                        used_tokens += search_tokens
-                        context_parts.append(search_block)
+                    # 过滤相似度低于阈值的结果（similarity 字段由 RPC 返回）
+                    SIMILARITY_THRESHOLD = 0.75
+                    filtered = [r for r in search_result.data if r.get("similarity", 0) >= SIMILARITY_THRESHOLD]
+                    if filtered:
+                        search_parts = ["【相关历史】"]
+                        for r in filtered:
+                            search_parts.append(f"Dream: {(r.get('user_msg') or '')[:100]}")
+                            search_parts.append(f"Claude: {(r.get('assistant_msg') or '')[:100]}")
+                        search_block = "\n".join(search_parts)
+                        search_tokens = count_tokens(search_block)
+                        if search_tokens <= remaining // 2:
+                            used_tokens += search_tokens
+                            context_parts.append(search_block)
         except Exception as e:
             logging.warning(f"[context_builder] 语义检索失败: {e}")
 
@@ -308,7 +315,17 @@ async def build_context(session_id: str, user_input: str, model_channel: str = "
 - 正文就是你直接对 Dream 说的话"""
 
     if context_parts:
-        full_context = base_prompt + "\n\n" + time_line + "\n\n---\n\n" + "\n\n---\n\n".join(context_parts)
+        memory_block = "\n\n---\n\n".join(context_parts)
+        full_context = (
+            base_prompt
+            + "\n\n"
+            + time_line
+            + "\n\n---\n\n"
+            + "【背景参考信息】\n"
+            + "以下是关于 Dream 的背景记忆与历史对话摘要，供你参考。"
+            + "这些是被动参考，除非当前话题自然涉及，否则不要主动提起。\n\n"
+            + memory_block
+        )
         return [{"role": "system", "content": full_context}]
     else:
         return [{"role": "system", "content": base_prompt + "\n\n" + time_line}]

@@ -17,17 +17,26 @@ logger = logging.getLogger(__name__)
 
 # ---- 实时微摘要（核心机制）----
 
-MICRO_SUMMARY_PROMPT = """审阅以下对话，判断是否包含以下任一类新信息：
-1. 新的偏好或态度变化
-2. 重要情绪转折
-3. 关键事件或决定
-4. 新的约定或承诺
-5. 新的个人信息（地点、习惯、计划等）
+MICRO_SUMMARY_PROMPT = """审阅以下对话，判断是否包含需要长期记住的新信息。
 
-如果有，输出JSON：
-{{"has_update": true, "type": "preference|emotion|event|promise|info", "content": "简短描述（一两句话）", "layer": "core_living|scene"}}
+【必须同时满足以下条件才算"值得记录"】
+1. 是 Dream 明确陈述的事实，不是你的推断或对话中泛泛的表达
+2. 属于以下类型之一：
+   - 明确的偏好/厌恶（"我喜欢…""我不喜欢…""我讨厌…"）
+   - 具体的约定/承诺（有明确时间或对象的）
+   - 重要情感事件（不是普通的心情波动）
+   - 用户主动告知的新个人信息（地点变化、新习惯、重要计划）
 
-如果没有值得记录的新信息：
+【以下情况输出 has_update: false】
+- 普通问答或闲聊
+- 已经是众所周知或之前记录过的信息
+- AI 推断的内容（Dream 没有明确说）
+- 情绪词汇（"今天有点累"这类日常表达不算重要情感事件）
+
+如果值得记录，输出JSON：
+{{"has_update": true, "type": "preference|emotion|event|promise|info", "content": "简短描述（一两句话，必须包含具体细节）", "layer": "core_living|scene"}}
+
+如果不值得记录：
 {{"has_update": false}}
 
 只输出JSON，不要其他文字。
@@ -39,6 +48,22 @@ MICRO_SUMMARY_PROMPT = """审阅以下对话，判断是否包含以下任一类
 
 async def realtime_micro_summary(user_msg: str, assistant_msg: str, scene_type: str = "daily"):
     """每轮对话后的微型判断任务（BackgroundTask调用，不阻塞响应）"""
+    # 每日自动记忆创建上限（防止闲聊刷爆记忆库）
+    DAILY_AUTO_MEMORY_LIMIT = 3
+    try:
+        sb = get_supabase()
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        today_count = sb.table("memories") \
+            .select("id", count="exact") \
+            .eq("source", "auto") \
+            .gte("created_at", today_start) \
+            .execute()
+        if (today_count.count or 0) >= DAILY_AUTO_MEMORY_LIMIT:
+            logger.info(f"[memory_cycle] 今日自动记忆已达上限（{DAILY_AUTO_MEMORY_LIMIT}条），跳过微摘要")
+            return
+    except Exception as e:
+        logger.warning(f"[memory_cycle] 检查每日限额失败: {e}")
+
     try:
         s = get_settings()
         prompt = MICRO_SUMMARY_PROMPT.format(
