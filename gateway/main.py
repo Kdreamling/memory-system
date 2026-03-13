@@ -390,6 +390,33 @@ async def debug_context(session_id: str, model: str = "deepseek-chat", request: 
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/admin/settings")
+async def get_admin_settings(request: Request):
+    """返回当前 FEATURE_FLAGS 状态"""
+    from auth import verify_token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Authorization")
+    verify_token(auth_header.replace("Bearer ", ""))
+    return {"flags": FEATURE_FLAGS}
+
+
+@app.patch("/api/admin/settings")
+async def patch_admin_settings(body: dict, request: Request):
+    """更新一个或多个 FEATURE_FLAGS（运行时生效，重启后重置）"""
+    from auth import verify_token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Authorization")
+    verify_token(auth_header.replace("Bearer ", ""))
+
+    allowed_keys = {"memory_enabled", "micro_summary_enabled", "search_enabled", "context_inject_enabled"}
+    updates = {k: v for k, v in body.items() if k in allowed_keys and isinstance(v, bool)}
+    FEATURE_FLAGS.update(updates)
+    logger.info(f"[admin] FEATURE_FLAGS updated: {updates}")
+    return {"flags": FEATURE_FLAGS}
+
+
 @app.post("/v1/chat/completions")
 async def proxy_chat_completions(request: Request, background_tasks: BackgroundTasks):
     try:
