@@ -36,7 +36,7 @@ def get_channels() -> dict:
                 "anthropic/claude-opus-4.6",
             ],
             "supports_thinking": True,
-            "thinking_format": "openai",
+            "thinking_format": "openai_xml",
         },
     }
 
