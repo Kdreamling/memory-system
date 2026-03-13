@@ -566,7 +566,7 @@ async def patch_admin_settings(body: dict, request: Request):
         raise HTTPException(status_code=401, detail="缺少 Authorization")
     verify_token(auth_header.replace("Bearer ", ""))
 
-    allowed_keys = {"memory_enabled", "micro_summary_enabled", "search_enabled", "context_inject_enabled"}
+    allowed_keys = {"memory_enabled", "micro_summary_enabled", "search_enabled", "context_inject_enabled", "memory_tool_enabled"}
     updates = {k: v for k, v in body.items() if k in allowed_keys and isinstance(v, bool)}
     FEATURE_FLAGS.update(updates)
     logger.info(f"[admin] FEATURE_FLAGS updated: {updates}")
