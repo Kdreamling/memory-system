@@ -41,6 +41,166 @@ from context_builder import build_context
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# ============ search_memory 工具定义 ============
+
+SEARCH_MEMORY_TOOL_DEF = {
+    "type": "function",
+    "function": {
+        "name": "search_memory",
+        "description": (
+            "搜索 Dream 的记忆库。当你需要回忆具体的事件、偏好、约定、或之前讨论过的细节时使用。"
+            "不需要每次都搜索，只在你觉得记忆中可能有相关信息时才调用。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词，尽量具体。例如：'Dream 的生日'、'Reverie 部署方式'、'上次吵架'",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["memories", "conversations", "all"],
+                    "description": "搜索范围：memories=长期记忆条目，conversations=历史对话，all=全部",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+async def _execute_memory_search(query: str, scope: str, model_channel: str, scene_type: str) -> list:
+    """执行记忆搜索，返回合并结果"""
+    results = []
+    try:
+        from config import get_supabase
+        sb = get_supabase()
+
+        if scope in ("memories", "all"):
+            mem_result = sb.table("memories") \
+                .select("content, layer, scene_type, created_at") \
+                .ilike("content", f"%{query}%") \
+                .order("last_accessed_at", desc=True) \
+                .limit(3).execute()
+            for m in (mem_result.data or []):
+                m["_source"] = "memories"
+                results.append(m)
+
+        if scope in ("conversations", "all"):
+            from services.hybrid_search import hybrid_search
+            conv_results = await hybrid_search(
+                query, scene_type=scene_type, limit=5, channel=model_channel
+            )
+            results.extend(conv_results)
+
+    except Exception as e:
+        logger.warning(f"[reverie] memory search error: {e}")
+
+    return results[:8]
+
+
+def _format_search_results(results: list) -> str:
+    """将搜索结果格式化为 AI 可读的字符串"""
+    if not results:
+        return "未找到相关记忆。"
+    parts = []
+    for i, r in enumerate(results, 1):
+        source = r.get("_source", "")
+        if source == "memories":
+            parts.append(f"{i}. [长期记忆] {r.get('content', '')[:200]}")
+        elif source == "summaries":
+            parts.append(f"{i}. [摘要] {r.get('summary', '')[:300]}")
+        else:
+            user = (r.get("user_msg") or "")[:150]
+            asst = (r.get("assistant_msg") or "")[:150]
+            parts.append(f"{i}. [对话] Dream: {user}\n   回应: {asst}")
+    return "\n\n".join(parts)
+
+
+async def _run_tool_phase(
+    messages: list, ch_config: dict, headers: dict,
+    resolved_model: str, model_channel: str, scene_type: str
+) -> tuple[list, list]:
+    """
+    前置非流式调用：让 AI 决定是否搜索记忆。
+    返回 (enriched_messages, pre_events)
+    pre_events 是要在流式输出前 yield 的 SSE 事件列表。
+    """
+    pre_events = []
+    try:
+        probe_body = {
+            "model": resolved_model,
+            "messages": messages,
+            "stream": False,
+            "tools": [SEARCH_MEMORY_TOOL_DEF],
+            "tool_choice": "auto",
+            "max_tokens": 300,
+        }
+        proxy = get_proxy(ch_config["base_url"])
+        async with httpx.AsyncClient(timeout=10, proxy=proxy) as client:
+            resp = await client.post(
+                f"{ch_config['base_url']}/chat/completions",
+                headers=headers,
+                json=probe_body,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        tool_calls = message.get("tool_calls") or []
+
+        if not tool_calls:
+            return messages, pre_events
+
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            if fn.get("name") != "search_memory":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                continue
+
+            query = args.get("query", "")
+            scope = args.get("scope", "all")
+
+            logger.info(f"[reverie] tool: search_memory query={query!r} scope={scope}")
+            pre_events.append({"type": "tool_searching", "query": query})
+
+            search_results = await _execute_memory_search(query, scope, model_channel, scene_type)
+            pre_events.append({"type": "tool_result", "found": len(search_results)})
+
+            # 把工具调用 + 结果追加到消息列表，让 AI 在流式阶段基于结果回复
+            enriched = messages + [
+                {
+                    "role": "assistant",
+                    "content": message.get("content"),
+                    "tool_calls": [tc],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": _format_search_results(search_results),
+                },
+            ]
+            return enriched, pre_events
+
+    except Exception as e:
+        logger.warning(f"[reverie] tool phase failed: {e}")
+
+    return messages, pre_events
+
+
+async def _reverie_stream_with_pre(pre_events: list, *args, **kwargs):
+    """先 yield pre_events，再 yield _reverie_stream 的所有内容"""
+    for event in pre_events:
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    async for chunk in _reverie_stream(*args, **kwargs):
+        yield chunk
+
+
 # ============ v2 全局服务实例 ============
 scene_detector = SceneDetector()
 synonym_service = SynonymService()
@@ -607,11 +767,24 @@ async def _reverie_chat(body: dict, session_id: str, request: Request, backgroun
 
     logger.info(f"[reverie] session={session_id} model={model_name} -> ch={ch_name}/{resolved_model} stream={stream}")
 
+    # 5.5 工具调用阶段（memory_tool_enabled 时，前置非流式调用让 AI 决定是否搜索记忆）
+    pre_events = []
+    if stream and FEATURE_FLAGS.get("memory_tool_enabled", False):
+        try:
+            messages, pre_events = await _run_tool_phase(
+                messages, ch_config, headers, resolved_model, model_channel, session_scene_type
+            )
+            upstream_body["messages"] = messages
+        except Exception as e:
+            logger.warning(f"[reverie] tool phase error: {e}")
+
     if stream:
-        return StreamingResponse(
-            _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks, model_channel, session_scene_type),
-            media_type="text/event-stream",
+        generator = (
+            _reverie_stream_with_pre(pre_events, ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks, model_channel, session_scene_type)
+            if pre_events else
+            _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id, user_input, timeout, background_tasks, model_channel, session_scene_type)
         )
+        return StreamingResponse(generator, media_type="text/event-stream")
     else:
         proxy = get_proxy(ch_config["base_url"])
         async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:

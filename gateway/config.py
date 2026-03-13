@@ -68,6 +68,7 @@ FEATURE_FLAGS = {
     "micro_summary_enabled": True,
     "search_enabled": False,        # 语义检索：暂时关闭，噪点过多待优化后重开
     "context_inject_enabled": True,
+    "memory_tool_enabled": False,   # AI 主动搜索记忆工具（function calling）：默认关闭，手动开启测试
 }
 
 
