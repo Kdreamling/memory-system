@@ -367,6 +367,29 @@ async def health_check():
 async def list_models():
     return {"models": list(BACKENDS.keys()), "aliases": MODEL_ALIASES}
 
+@app.get("/api/debug/context")
+async def debug_context(session_id: str, model: str = "deepseek-chat", request: Request = None):
+    """返回下一次对话实际会注入给模型的系统提示词内容（调试用）"""
+    from auth import verify_token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="缺少 Authorization")
+    verify_token(auth_header.replace("Bearer ", ""))
+
+    model_channel, _, _ = resolve_channel(model)
+    try:
+        context_messages = await build_context(session_id, "", model_channel)
+        system_content = context_messages[0]["content"] if context_messages else ""
+        return {
+            "session_id": session_id,
+            "model_channel": model_channel,
+            "system_prompt": system_content,
+            "token_estimate": len(system_content) // 4,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/v1/chat/completions")
 async def proxy_chat_completions(request: Request, background_tasks: BackgroundTasks):
     try:
