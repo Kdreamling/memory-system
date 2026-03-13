@@ -170,7 +170,8 @@ async def _run_tool_phase(
             pre_events.append({"type": "tool_searching", "query": query})
 
             search_results = await _execute_memory_search(query, scope, model_channel, scene_type)
-            pre_events.append({"type": "tool_result", "found": len(search_results)})
+            formatted = _format_search_results(search_results)
+            pre_events.append({"type": "tool_result", "found": len(search_results), "content": formatted})
 
             # 把工具调用 + 结果追加到消息列表，让 AI 在流式阶段基于结果回复
             enriched = messages + [
