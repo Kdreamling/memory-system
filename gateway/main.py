@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import sys
 sys.path.insert(0, '/home/dream/memory-system/gateway')
-from config import get_settings
+from config import get_settings, FEATURE_FLAGS
 from services.storage import save_conversation_with_round, update_weight
 from services.summary_service import check_and_generate_summary
 from services.pgvector_service import store_conversation_embedding
@@ -229,12 +229,8 @@ MODEL_ALIASES = {
     "claude-dzzi-peruse": "claude-opus-4-6-dzzi-peruse",
 }
 
-# ---- Reverie 功能降级开关 ----
-FEATURE_FLAGS = {
-    "memory_enabled": True,
-    "micro_summary_enabled": True,
-    "context_inject_enabled": True,
-}
+# ---- Reverie 功能降级开关（从 config.py 统一导入，不在此重复定义）----
+# FEATURE_FLAGS 已在上方 from config import FEATURE_FLAGS 导入
 
 # ============ 过滤关键词 ============
 
@@ -699,6 +695,9 @@ async def _reverie_stream(ch_name, ch_config, headers, upstream_body, session_id
 
 async def _reverie_store(session_id: str, user_msg: str, assistant_msg: str, scene_type: str, thinking: str = "", model_channel: str = "deepseek"):
     """Reverie 消息存储 + 微摘要触发"""
+    if not FEATURE_FLAGS.get("memory_enabled", True):
+        logger.info("[reverie] memory_enabled=False，跳过存储")
+        return
     try:
         from config import get_supabase
         sb = get_supabase()
