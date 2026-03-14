@@ -167,7 +167,7 @@ async def rebuild_merged_summary(scene_type: str, dimension: str):
     s = get_settings()
 
     recent_raws = sb.table("memory_summaries") \
-        .select("raw_summary") \
+        .select("id, raw_summary") \
         .eq("scene_type", scene_type) \
         .eq("dimension", dimension) \
         .order("created_at", desc=True) \
