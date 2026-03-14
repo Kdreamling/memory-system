@@ -68,12 +68,22 @@ class ThinkingAdapter:
     # openai — reasoning_content 字段（DZZI / DeepSeek-R1）
     # ------------------------------------------------------------------
 
-    def _adapt_openai_compatible(self, chunk: dict) -> list:
+    def _adapt_openai_compatible(self, chunk: dict, _channel: str = "") -> list:
         choices = chunk.get("choices", [])
         if not choices:
             return []
 
         delta = choices[0].get("delta", {})
+
+        # DEBUG: 打印 dzzi 原始 delta 结构（确认字段格式后删除）
+        if delta and any(delta.values()):
+            import sys
+            print(f"[DZZI_DEBUG] delta keys={list(delta.keys())} | "
+                  f"reasoning={repr(delta.get('reasoning', '__absent__'))[:80]} | "
+                  f"reasoning_content={repr(delta.get('reasoning_content', '__absent__'))[:80]} | "
+                  f"content={repr(delta.get('content', '__absent__'))[:80]}",
+                  file=sys.stderr, flush=True)
+
         events = []
 
         reasoning = delta.get("reasoning") or delta.get("reasoning_content")
