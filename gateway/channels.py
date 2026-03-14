@@ -26,7 +26,7 @@ def get_channels() -> dict:
             "api_key": s.dzzi_api_key,
             "models": ["[0.1]claude-opus-4-6-thinking"],
             "supports_thinking": True,
-            "thinking_format": "openai",
+            "thinking_format": "openai_xml",  # dzzi sends thinking as <thinking>...</thinking> in content field
         },
         "openrouter": {
             "provider": "openrouter",
