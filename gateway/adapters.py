@@ -74,6 +74,16 @@ class ThinkingAdapter:
             return []
 
         delta = choices[0].get("delta", {})
+
+        # DEBUG: 打印所有非空字段（用 thinking-heavy 的问题测试后删除）
+        if delta:
+            import sys
+            print(f"[DZZI_DEBUG2] keys={list(delta.keys())} | "
+                  f"reasoning_content={repr(delta.get('reasoning_content', '__absent__'))[:100]} | "
+                  f"reasoning={repr(delta.get('reasoning', '__absent__'))[:100]} | "
+                  f"content={repr(delta.get('content', '__absent__'))[:100]}",
+                  file=sys.stderr, flush=True)
+
         events = []
 
         reasoning = delta.get("reasoning") or delta.get("reasoning_content")
