@@ -138,6 +138,18 @@ async def delete_session(session_id: str, _=Depends(auth_required)):
     return {"ok": True}
 
 
+@router.delete("/{session_id}/messages/{conversation_id}")
+async def delete_message(session_id: str, conversation_id: str, _=Depends(auth_required)):
+    """删除单轮对话（用户消息 + AI 回复一起删）"""
+    sb = get_supabase()
+    sb.table("conversations") \
+        .delete() \
+        .eq("id", conversation_id) \
+        .eq("session_id", session_id) \
+        .execute()
+    return {"ok": True}
+
+
 @router.get("/{session_id}/messages")
 async def get_messages(
     session_id: str,
